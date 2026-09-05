@@ -1,0 +1,226 @@
+:root {
+  color-scheme: dark;
+  --accent: #a8fa34;
+  --cpu: #a8fa34;
+  --cpu-rgb: 168, 250, 52;
+  --memory: #7ce6d0;
+  --memory-rgb: 124, 230, 208;
+  --gpu: #9fa7ff;
+  --gpu-rgb: 159, 167, 255;
+  --board: #b98cff;
+  --board-rgb: 185, 140, 255;
+  --storage: #ffa86d;
+  --storage-rgb: 255, 168, 109;
+  --network: #74bcff;
+  --network-rgb: 116, 188, 255;
+  --minimal-cpu-label: #8fc45b;
+  --minimal-memory-label: #62b9a4;
+  --minimal-gpu-label: #8792db;
+  --minimal-board-label: #b287d5;
+  --minimal-storage-label: #d58e63;
+  --minimal-network-label: #70a5d2;
+  --warning: #ffbd5a;
+  --danger: #ff766b;
+  --overlay-text: #f1f6f1;
+  --overlay-label: #c7d1ca;
+  --overlay-border: rgba(218, 231, 222, .18);
+  --overlay-divider: rgba(218, 231, 222, .13);
+  --overlay-background: linear-gradient(112deg, rgba(31, 38, 37, .96), rgba(15, 19, 21, .98));
+  --overlay-shadow: 0 10px 28px rgba(0, 0, 0, .25), inset 0 1px rgba(255,255,255,.05);
+  --scale: 1;
+  --corner-radius: 0px;
+  --corner-content-inset: 0px;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; min-height: 0; margin: 0; background: transparent; }
+#overlay-root { display: flex; width: 100%; min-height: 0; align-items: flex-start; justify-content: center; padding: 0; }
+#overlay-root[data-theme="light"] {
+  color-scheme: light;
+  --accent: #3d7e08;
+  --cpu: #3d7e08;
+  --cpu-rgb: 61, 126, 8;
+  --memory: #08796d;
+  --memory-rgb: 8, 121, 109;
+  --gpu: #4451b7;
+  --gpu-rgb: 68, 81, 183;
+  --board: #744b9b;
+  --board-rgb: 116, 75, 155;
+  --storage: #a35d2b;
+  --storage-rgb: 163, 93, 43;
+  --network: #2f679c;
+  --network-rgb: 47, 103, 156;
+  --minimal-cpu-label: #4f7f26;
+  --minimal-memory-label: #2f7d6f;
+  --minimal-gpu-label: #4d5caa;
+  --minimal-board-label: #744b9b;
+  --minimal-storage-label: #a35d2b;
+  --minimal-network-label: #2f679c;
+  --warning: #8d5d08;
+  --danger: #bd3f37;
+  --overlay-text: #142218;
+  --overlay-label: #425249;
+  --overlay-border: rgba(23, 47, 30, .2);
+  --overlay-divider: rgba(23, 47, 30, .16);
+  --overlay-background: linear-gradient(112deg, rgba(253, 255, 253, .97), rgba(231, 239, 232, .98));
+  --overlay-shadow: 0 10px 28px rgba(23, 47, 30, .16), inset 0 1px rgba(255,255,255,.78);
+}
+@media (prefers-color-scheme: light) {
+  #overlay-root[data-theme="system"] {
+    color-scheme: light;
+    --accent: #3d7e08;
+    --cpu: #3d7e08;
+    --cpu-rgb: 61, 126, 8;
+    --memory: #08796d;
+    --memory-rgb: 8, 121, 109;
+    --gpu: #4451b7;
+    --gpu-rgb: 68, 81, 183;
+    --board: #744b9b;
+    --board-rgb: 116, 75, 155;
+    --storage: #a35d2b;
+    --storage-rgb: 163, 93, 43;
+    --network: #2f679c;
+    --network-rgb: 47, 103, 156;
+    --minimal-cpu-label: #4f7f26;
+    --minimal-memory-label: #2f7d6f;
+    --minimal-gpu-label: #4d5caa;
+    --minimal-board-label: #744b9b;
+    --minimal-storage-label: #a35d2b;
+    --minimal-network-label: #2f679c;
+    --warning: #8d5d08;
+    --danger: #bd3f37;
+    --overlay-text: #142218;
+    --overlay-label: #425249;
+    --overlay-border: rgba(23, 47, 30, .2);
+    --overlay-divider: rgba(23, 47, 30, .16);
+    --overlay-background: linear-gradient(112deg, rgba(253, 255, 253, .97), rgba(231, 239, 232, .98));
+    --overlay-shadow: 0 10px 28px rgba(23, 47, 30, .16), inset 0 1px rgba(255,255,255,.78);
+  }
+}
+
+.overlay-shell {
+  display: inline-flex;
+  max-width: 100vw;
+  overflow: hidden;
+  border: 1px solid var(--overlay-border);
+  border-radius: var(--corner-radius);
+  /* 由 Chromium 做抗锯齿裁剪，避免原生窗口遮罩在底边留下直角残影。 */
+  clip-path: inset(0 round var(--corner-radius));
+  color: var(--overlay-text);
+  background: var(--overlay-background);
+  box-shadow: var(--overlay-shadow);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.overlay-metrics { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; }
+.overlay-metric { color: var(--overlay-text); font-variant-numeric: tabular-nums; }
+.overlay-metric.is-unavailable { opacity: .52; }
+.overlay-label { color: var(--overlay-label); font-weight: 700; white-space: nowrap; }
+.overlay-metric strong { color: var(--overlay-text); font-weight: 700; letter-spacing: -.015em; white-space: nowrap; }
+.overlay-icon { display: grid; place-items: center; color: var(--cpu); background: rgba(var(--cpu-rgb), .13); }
+.metric-memory .overlay-icon { color: var(--memory); background: rgba(var(--memory-rgb), .13); }
+.metric-gpu .overlay-icon { color: var(--gpu); background: rgba(var(--gpu-rgb), .13); }
+.metric-board .overlay-icon { color: var(--board); background: rgba(var(--board-rgb), .13); }
+.metric-storage .overlay-icon { color: var(--storage); background: rgba(var(--storage-rgb), .10); }
+.metric-network .overlay-icon { color: var(--network); background: rgba(var(--network-rgb), .10); }
+
+/* 顶部：简洁信息条 */
+.mode-top .overlay-shell {
+  width: max-content;
+  /* 数值变长时禁止 flex 容器把内容压回旧窗口宽度，交给主进程重新调整窗口。 */
+  flex: 0 0 auto;
+  max-width: 1800px;
+  /* 完全圆润时给两端留出安全区，最后一项不会被右侧弧面吃掉。 */
+  padding-inline: var(--corner-content-inset);
+}
+.top-minimal .overlay-metrics { flex-wrap: nowrap; }
+.top-minimal .overlay-metric {
+  display: inline-flex;
+  min-height: calc(30px * var(--scale));
+  align-items: center;
+  gap: calc(7px * var(--scale));
+  padding: 0 calc(11px * var(--scale));
+  border-right: 1px solid var(--overlay-divider);
+}
+
+.top-minimal .overlay-metric:last-child { border-right: 0; }
+.top-minimal .overlay-label { font-size: calc(11px * var(--scale)); letter-spacing: .015em; }
+.top-minimal .metric-cpu .overlay-label { color: var(--minimal-cpu-label); }
+.top-minimal .metric-memory .overlay-label { color: var(--minimal-memory-label); }
+.top-minimal .metric-gpu .overlay-label { color: var(--minimal-gpu-label); }
+.top-minimal .metric-board .overlay-label { color: var(--minimal-board-label); }
+.top-minimal .metric-storage .overlay-label { color: var(--minimal-storage-label); }
+.top-minimal .metric-network .overlay-label { color: var(--minimal-network-label); }
+.inline-values { display: inline-flex; align-items: center; gap: calc(6px * var(--scale)); }
+.inline-values strong { font-size: calc(12px * var(--scale)); }
+.inline-value:not(:last-child)::after { content: '|'; margin-left: calc(6px * var(--scale)); color: var(--overlay-divider); font-size: calc(11px * var(--scale)); font-style: normal; }
+
+/* 顶部：详细信息条，所有项目的标签和值按两行基线对齐 */
+.top-detailed .overlay-shell { width: max-content; }
+.top-detailed .overlay-metrics {
+  display: grid;
+  width: max-content;
+  grid-template-columns: repeat(var(--top-columns), minmax(calc(104px * var(--scale)), max-content));
+  padding: calc(3px * var(--scale)) calc(5px * var(--scale));
+}
+
+.top-detailed .overlay-metric {
+  display: grid;
+  grid-template-columns: calc(17px * var(--scale)) minmax(0, 1fr);
+  grid-template-rows: calc(13px * var(--scale)) calc(17px * var(--scale));
+  min-height: calc(36px * var(--scale));
+  column-gap: calc(6px * var(--scale));
+  padding: calc(3px * var(--scale)) calc(8px * var(--scale));
+  border-right: 1px solid var(--overlay-divider);
+}
+
+.top-detailed .overlay-icon { grid-row: span 2; width: calc(17px * var(--scale)); height: calc(17px * var(--scale)); align-self: center; border-radius: calc(5px * var(--scale)); font-size: calc(10px * var(--scale)); }
+.top-detailed .overlay-label { overflow: hidden; font-size: calc(9px * var(--scale)); line-height: 1.15; text-overflow: ellipsis; }
+.top-detailed .overlay-metric strong { align-self: end; font-size: calc(12px * var(--scale)); line-height: 1; }
+.top-detailed .overlay-metric:nth-child(12n), .top-detailed .overlay-metric:last-child { border-right: 0; }
+
+/* 侧边：原纵向卡片的无标题结合版 */
+.mode-side { align-items: center; }
+.mode-side.side-left { justify-content: flex-start; }
+.mode-side.side-right { justify-content: flex-end; }
+.mode-side .overlay-shell { display: flex; width: 100%; }
+.mode-side .overlay-metrics {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 1fr;
+  gap: calc(2px * var(--scale));
+  padding: calc(4px * var(--scale));
+}
+
+.mode-side .overlay-metric { display: grid; border-radius: calc(7px * var(--scale)); }
+.mode-side .overlay-icon { width: calc(20px * var(--scale)); height: calc(20px * var(--scale)); border-radius: calc(6px * var(--scale)); font-size: calc(11px * var(--scale)); }
+
+.side-columns-1 .overlay-metric,
+.side-columns-2 .overlay-metric {
+  grid-template-columns: calc(22px * var(--scale)) minmax(0, 1fr) max-content;
+  justify-content: stretch;
+  align-items: center;
+  min-height: calc(35px * var(--scale));
+  gap: calc(5px * var(--scale));
+  padding: 0 calc(6px * var(--scale));
+  min-width: 0;
+}
+
+.side-columns-1 .overlay-label,
+.side-columns-2 .overlay-label { overflow: hidden; font-size: calc(10px * var(--scale)); text-overflow: ellipsis; }
+.side-columns-1 .overlay-metric strong,
+.side-columns-2 .overlay-metric strong { font-size: calc(12px * var(--scale)); }
+
+.side-columns-2 .overlay-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(8px * var(--scale)); }
+
+.overlay-metric.is-warning .overlay-label,
+.overlay-metric strong.is-warning,
+.overlay-metric.is-warning > strong { color: var(--warning); }
+.overlay-metric.is-critical .overlay-label,
+.overlay-metric strong.is-critical,
+.overlay-metric.is-critical > strong { color: var(--danger); }
+
+#overlay-root[data-health="warning"] .overlay-shell { border-color: rgba(255, 189, 90, .42); }
+#overlay-root[data-health="danger"] .overlay-shell { border-color: rgba(255, 118, 107, .52); }

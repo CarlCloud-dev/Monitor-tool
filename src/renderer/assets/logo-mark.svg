@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Monitor Tool</title>
+  <desc id="desc">A compact monitor pulse mark</desc>
+  <defs>
+    <linearGradient id="surface" x1="24" y1="20" x2="232" y2="238" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#20292b" />
+      <stop offset="1" stop-color="#101517" />
+    </linearGradient>
+    <linearGradient id="pulse" x1="52" y1="174" x2="202" y2="86" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#80d51b" />
+      <stop offset="1" stop-color="#c5ff5b" />
+    </linearGradient>
+  </defs>
+  <rect x="14" y="14" width="228" height="228" rx="58" fill="url(#surface)" stroke="#394548" stroke-width="6" />
+  <path d="M52 163h34l17-57 24 91 23-65 17 31h37" fill="none" stroke="url(#pulse)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="204" cy="163" r="9" fill="#c5ff5b" />
+  <path d="M52 193h152" fill="none" stroke="#6b7a78" stroke-width="5" stroke-linecap="round" opacity=".6" />
+</svg>

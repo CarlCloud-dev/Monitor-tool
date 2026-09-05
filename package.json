@@ -1,0 +1,60 @@
+{
+  "name": "monitor-tool",
+  "version": "0.1.1",
+  "private": true,
+  "description": "A lightweight, configurable Windows desktop hardware monitor.",
+  "author": "Monitor Tool",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --win dir",
+    "dist": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "systeminformation": "5.33.8"
+  },
+  "devDependencies": {
+    "electron": "44.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.local.monitor-tool",
+    "productName": "Monitor Tool",
+    "executableName": "MonitorTool",
+    "artifactName": "MonitorTool-${version}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/lhm",
+        "to": "lhm",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/renderer/assets/logo-mark.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "shortcutName": "Monitor Tool",
+      "uninstallDisplayName": "Monitor Tool",
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true
+    }
+  }
+}

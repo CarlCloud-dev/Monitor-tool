@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+    <title>Monitor Tool</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="titlebar">
+        <div class="brand"><span class="brand-mark"><img src="../assets/logo-mark.svg" alt="" /></span><span>MONITOR</span><span class="brand-subtitle">SYSTEM PULSE</span></div>
+        <div class="titlebar-meta"><span class="live-dot"></span><span id="capture-time">正在连接传感器</span></div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="nav-label">工作台</div>
+          <button class="nav-item active" data-page="overview" type="button"><span class="nav-icon">⌁</span>实时概览</button>
+          <button class="nav-item" data-page="history" type="button"><span class="nav-icon">◫</span>历史趋势</button>
+
+          <section class="sidebar-theme" id="theme-picker">
+            <div class="nav-label">主题颜色</div>
+            <button id="theme-trigger" class="theme-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span class="theme-trigger-icon">◐</span>
+              <span class="theme-trigger-copy"><b id="theme-current">跟随系统</b><small>界面外观</small></span>
+              <span class="theme-caret" aria-hidden="true"></span>
+            </button>
+            <div id="theme-menu" class="theme-menu" role="listbox" hidden>
+              <button data-theme-option="system" type="button" role="option"><span class="theme-option-icon system">◐</span><span><b>跟随系统</b><small>自动适配明暗</small></span><i>✓</i></button>
+              <button data-theme-option="dark" type="button" role="option"><span class="theme-option-icon dark">●</span><span><b>深色模式</b><small>沉浸监控界面</small></span><i>✓</i></button>
+              <button data-theme-option="light" type="button" role="option"><span class="theme-option-icon light">●</span><span><b>浅色模式</b><small>明亮清晰界面</small></span><i>✓</i></button>
+            </div>
+          </section>
+
+          <div class="sidebar-foot">
+            <div class="sensor-status">
+              <span class="sensor-status-label">传感器状态</span>
+              <strong id="sensor-status">检测中</strong>
+              <span id="sensor-status-detail">基础性能数据已准备</span>
+            </div>
+          </div>
+        </aside>
+
+        <main class="content" id="overview-page">
+          <section class="hero">
+            <div>
+              <p class="eyebrow">本机硬件状态</p>
+              <h1 id="health-title">正在读取系统状态</h1>
+              <p class="hero-copy" id="health-copy">只采集需要展示的实时指标，温度传感器按设备能力提供。</p>
+            </div>
+            <div class="health-chip" id="health-chip"><span></span><b>检查中</b></div>
+          </section>
+
+          <section class="section-heading">
+            <div>
+              <h2>实时指标</h2>
+              <p>随系统负载持续更新</p>
+            </div>
+            <span class="refresh-badge">自动刷新 <b id="refresh-label">1.0 s</b></span>
+          </section>
+
+          <section class="metrics-grid" id="metrics-grid" aria-live="polite"></section>
+
+          <section class="devices-panel">
+            <div class="device-row"><span class="device-label">CPU</span><span id="cpu-device">读取中</span></div>
+            <div class="device-row"><span class="device-label">GPU</span><span id="gpu-device">读取中</span></div>
+          </section>
+
+          <section class="trends-panel">
+            <div class="section-heading compact-heading">
+              <div><h2>短时趋势</h2><p>最近的内存采样数据</p></div>
+              <span class="history-badge">120 个采样点</span>
+            </div>
+            <div class="trends-grid" id="trends-grid"></div>
+          </section>
+        </main>
+
+        <main class="content history-page" id="history-page" hidden>
+          <section class="hero">
+            <div>
+              <p class="eyebrow">LOCAL HISTORY</p>
+              <h1>历史趋势</h1>
+              <p class="hero-copy">把硬件状态保存到本机，按时间回看负载、温度与磁盘活动。记录开关和最长保留周期在右侧独立管理。</p>
+            </div>
+            <div class="history-state-chip" id="history-state-chip"><span></span><b>准备中</b></div>
+          </section>
+
+          <section class="history-summary-grid">
+            <article class="history-summary-card"><span>记录状态</span><strong id="history-summary-status">—</strong><small id="history-summary-detail">—</small></article>
+            <article class="history-summary-card"><span>最长保留周期</span><strong id="history-summary-retention">—</strong><small>超过周期的旧记录自动清除</small></article>
+            <article class="history-summary-card"><span>已保存点数</span><strong id="history-summary-count">—</strong><small id="history-summary-range">—</small></article>
+          </section>
+
+          <section class="history-chart-section">
+            <div class="section-heading compact-heading">
+              <div><h2>历史曲线</h2><p id="history-chart-copy">正在读取本地记录</p></div>
+              <button id="history-refresh" class="text-button" type="button">刷新</button>
+            </div>
+            <div class="history-charts" id="history-charts"></div>
+            <div class="history-empty" id="history-empty" hidden>
+              <span>◌</span><b id="history-empty-title">还没有历史记录</b><p id="history-empty-copy">开启记录后，系统会按固定间隔保存采样数据。</p>
+            </div>
+          </section>
+        </main>
+
+        <aside class="control-panel" id="monitor-settings-panel">
+          <section class="panel-heading">
+            <div>
+              <p class="eyebrow">DESKTOP OVERLAY</p>
+              <h2>桌面浮窗</h2>
+            </div>
+            <label class="switch" title="显示或隐藏桌面浮窗">
+              <input id="overlay-visible" type="checkbox" />
+              <span></span>
+            </label>
+          </section>
+
+          <div class="control-group">
+            <label class="control-label">浮窗模式</label>
+            <div class="segmented" id="mode-picker">
+              <button data-overlay-mode="top" type="button">顶部模式</button>
+              <button data-overlay-mode="side" type="button">侧边模式</button>
+            </div>
+            <div class="mode-options" id="top-mode-options">
+              <label class="option-label">顶部样式</label>
+              <div class="segmented compact-segmented">
+                <button data-top-style="minimal" type="button">简洁</button>
+                <button data-top-style="detailed" type="button">详细</button>
+              </div>
+              <p class="helper">简洁按 CPU / 内存 / GPU 分组；详细按监控项目整齐对齐。</p>
+            </div>
+            <div class="mode-options" id="side-mode-options" hidden>
+              <label class="option-label">停靠位置</label>
+              <div class="segmented compact-segmented">
+                <button data-side-position="left" type="button">左侧</button>
+                <button data-side-position="right" type="button">右侧</button>
+              </div>
+              <label class="option-label">信息排布</label>
+              <div class="segmented compact-segmented">
+                <button data-side-columns="1" type="button">单列</button>
+                <button data-side-columns="2" type="button">双列</button>
+              </div>
+              <p class="helper">侧边模式采用纵向卡片信息布局，可切换单列或双列。</p>
+            </div>
+          </div>
+
+          <div class="range-control">
+            <div class="control-label-row"><label for="overlay-opacity">透明度</label><output id="opacity-value">94%</output></div>
+            <input id="overlay-opacity" min="55" max="100" step="1" type="range" />
+          </div>
+
+          <div class="range-control">
+            <div class="control-label-row"><label for="overlay-scale">尺寸</label><output id="scale-value">100%</output></div>
+            <input id="overlay-scale" min="80" max="125" step="1" type="range" />
+          </div>
+
+          <div class="control-group network-control">
+            <label class="control-label" for="network-unit">网络速率单位</label>
+            <div class="select-control">
+              <select id="network-unit">
+                <option value="MB/s">MB/s</option>
+                <option value="KB/s">KB/s</option>
+              </select>
+            </div>
+            <p class="helper">下载与上传速率统一使用此单位显示。</p>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">浮窗圆角</label>
+            <div class="segmented corner-picker">
+              <button data-corner-radius="0" type="button">直角</button>
+              <button data-corner-radius="8" type="button">轻微圆角</button>
+              <button data-corner-radius="18" type="button">完全圆润</button>
+            </div>
+          </div>
+
+          <div class="toggles">
+            <label class="toggle-row"><span><b>始终置顶</b><small>置于普通窗口上方</small></span><input id="always-on-top" type="checkbox" /></label>
+            <label class="toggle-row"><span><b>锁定与穿透</b><small>不接收鼠标操作</small></span><input id="overlay-locked" type="checkbox" /></label>
+          </div>
+
+          <div class="toggles app-behavior">
+            <label class="toggle-row"><span><b>关闭时驻留托盘</b><small>关闭窗口后继续后台监控</small></span><input id="minimize-to-tray" type="checkbox" /></label>
+            <label class="toggle-row"><span><b>关闭主窗口进入轻量模式</b><small>保留浮窗与传感器，释放主界面资源</small></span><input id="lightweight-mode" type="checkbox" /></label>
+          </div>
+
+          <div class="enhanced-sensors">
+            <div><b>增强硬件传感器</b><small>Libre Hardware Monitor</small></div>
+            <label class="switch" title="启用温度、功耗、风扇和主板传感器">
+              <input id="lhm-enabled" type="checkbox" />
+              <span></span>
+            </label>
+            <div class="sensor-mode">
+              <span>采集权限</span>
+              <div class="segmented compact-segmented">
+                <button data-lhm-mode="standard" type="button">标准</button>
+                <button data-lhm-mode="elevated" type="button">管理员增强</button>
+              </div>
+            </div>
+            <p id="enhanced-sensor-detail">默认开启，可提供温度、功耗、风扇与主板传感器。</p>
+            <button id="pawnio-install" class="sensor-driver-help" type="button" hidden>安装传感器驱动（内置 · 仅一次）</button>
+          </div>
+
+          <div class="alerts-control">
+            <div class="alerts-heading"><div><b>温度告警</b><small>本地 Windows 通知</small></div><label class="switch"><input id="alerts-enabled" type="checkbox" /><span></span></label></div>
+            <div class="threshold-grid">
+              <label>CPU <input id="cpu-temperature-threshold" data-alert-field="cpuTemperature" type="number" min="50" max="105" step="1" /><em>°C</em></label>
+              <label>GPU <input id="gpu-temperature-threshold" data-alert-field="gpuTemperature" type="number" min="50" max="105" step="1" /><em>°C</em></label>
+            </div>
+            <p>达到阈值才通知；同一温度提醒默认每 5 分钟最多一次。</p>
+          </div>
+
+          <div class="panel-divider"></div>
+
+          <section class="display-items">
+            <div class="control-label-row"><label>显示项</label><span class="count" id="selected-count">0 项</span></div>
+            <p class="helper">可自由勾选全部项目；拖动已选项目调整浮窗顺序。</p>
+            <div class="metric-selector" id="metric-selector"></div>
+          </section>
+
+          <div class="panel-actions">
+            <button id="reset-position" class="ghost-button" type="button">恢复默认位置</button>
+          </div>
+        </aside>
+
+        <aside class="control-panel history-control-panel" id="history-settings-panel" hidden>
+          <section class="panel-heading">
+            <div>
+              <p class="eyebrow">HISTORY STORAGE</p>
+              <h2>历史记录</h2>
+            </div>
+            <label class="switch" title="启用或停用本地历史记录">
+              <input id="history-enabled" type="checkbox" />
+              <span></span>
+            </label>
+          </section>
+
+          <div class="control-group">
+            <label class="control-label" for="history-retention">最长保留周期</label>
+            <div class="select-control">
+              <select id="history-retention">
+                <option value="1">最多保留 1 小时</option>
+                <option value="6">最多保留 6 小时</option>
+                <option value="24">最多保留 24 小时</option>
+                <option value="72">最多保留 3 天</option>
+                <option value="168">最多保留 7 天</option>
+                <option value="720">最多保留 30 天</option>
+              </select>
+            </div>
+            <p class="helper">每 10 秒保存一个本地采样点；超过设定周期的记录会自动清除，不上传网络。</p>
+          </div>
+
+          <div class="history-storage-card">
+            <div><span>当前记录</span><strong id="history-storage-count">—</strong></div>
+            <div><span>记录范围</span><strong id="history-storage-range">—</strong></div>
+            <div><span>文件位置</span><strong>应用数据目录</strong></div>
+          </div>
+
+          <div class="panel-actions history-actions">
+            <button id="history-clear" class="ghost-button danger-action" type="button">清空历史记录</button>
+          </div>
+          <p class="helper history-note">历史记录设置与实时监控设置相互独立；关闭记录不会影响浮窗和传感器。</p>
+        </aside>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

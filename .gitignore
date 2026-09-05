@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+release/
+*.blockmap
+builder-effective-config.yaml
+*.log
+*.bak
+.DS_Store
