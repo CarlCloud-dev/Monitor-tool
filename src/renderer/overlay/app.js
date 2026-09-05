@@ -1,6 +1,11 @@
 const { monitorApi } = window;
 const state = { config: null, snapshot: null };
 let lastReportedSize = null;
+let renderedLayoutKey = '';
+let renderedLayoutIsMinimal = false;
+let metricNodes = new Map();
+let groupNodes = new Map();
+let resizeFramePending = false;
 
 const iconFor = (icon) => ({ cpu: '◌', thermometer: '∿', activity: '⌁', memory: '▦', gpu: '◇', disk: '◫', download: '↓', upload: '↑' }[icon] ?? '•');
 const groupLabel = (group) => ({ cpu: 'CPU', memory: '内存', gpu: 'GPU', board: '主板', storage: '磁盘', network: '网络' }[group] ?? '状态');
@@ -57,43 +62,89 @@ const groupedMetrics = (metrics) => {
 };
 
 const renderMinimalMetrics = (metrics) => groupedMetrics(metrics).map(([group, items]) => `
-  <article class="overlay-metric metric-${group} ${items.every((item) => item.value === null) ? 'is-unavailable' : ''} ${groupToneClass(items)}">
+  <article class="overlay-metric metric-${group} ${items.every((item) => item.value === null) ? 'is-unavailable' : ''} ${groupToneClass(items)}" data-metric-group="${group}">
     <span class="overlay-label">${groupLabel(group)}</span>
-    <span class="inline-values">${items.map((item) => `<strong class="inline-value ${metricToneClass(item)}" title="${item.label}">${formatValue(item)}</strong>`).join('')}</span>
+    <span class="inline-values">${items.map((item) => `<strong class="inline-value ${metricToneClass(item)}" data-metric-id="${item.id}" title="${item.label}">${formatValue(item)}</strong>`).join('')}</span>
   </article>`).join('');
 
 const renderDetailedMetrics = (metrics) => metrics.map((item) => `
-  <article class="overlay-metric metric-${item.group} ${item.value === null ? 'is-unavailable' : ''} ${metricToneClass(item)}">
+  <article class="overlay-metric metric-${item.group} ${item.value === null ? 'is-unavailable' : ''} ${metricToneClass(item)}" data-metric-group="${item.group}">
     <span class="overlay-icon">${iconFor(item.icon)}</span>
     <span class="overlay-label">${item.label}</span>
-    <strong>${formatValue(item)}</strong>
+    <strong data-metric-id="${item.id}">${formatValue(item)}</strong>
   </article>`).join('');
 
-function render() {
-  if (!state.config || !state.snapshot) return;
-  const { overlay } = state.config;
-  const selectedMetrics = overlay.metrics.map((id) => state.snapshot.metrics[id]).filter(Boolean);
-  const root = document.querySelector('#overlay-root');
-  const modeClass = overlay.mode === 'side'
-    ? `mode-side side-${overlay.sidePosition} side-columns-${overlay.sideColumns}`
-    : `mode-top top-${overlay.topStyle}`;
-  root.className = modeClass;
-  root.style.setProperty('--scale', overlay.scale);
-  root.style.setProperty('--corner-radius', `${overlay.cornerRadius * overlay.scale}px`);
-  root.style.setProperty('--corner-content-inset', `${Math.ceil(overlay.cornerRadius * overlay.scale * 0.6)}px`);
-  root.style.setProperty('--top-columns', String(Math.min(Math.max(selectedMetrics.length, 1), 12)));
-  root.dataset.theme = state.config.theme;
-  root.dataset.health = state.snapshot.health;
-  const metricsMarkup = overlay.mode === 'top' && overlay.topStyle === 'minimal'
+const layoutKeyFor = (overlay) => [
+  overlay.mode,
+  overlay.topStyle,
+  overlay.sidePosition,
+  overlay.sideColumns,
+  overlay.metrics.join(',')
+].join('|');
+
+const rebuildLayout = (root, overlay, selectedMetrics) => {
+  const isMinimal = overlay.mode === 'top' && overlay.topStyle === 'minimal';
+  const metricsMarkup = isMinimal
     ? renderMinimalMetrics(selectedMetrics)
     : renderDetailedMetrics(selectedMetrics);
-  root.innerHTML = `<section class="overlay-shell ${overlay.locked ? 'is-locked' : ''}">
-    <div class="overlay-metrics">${metricsMarkup}</div>
-  </section>`;
+  root.innerHTML = '<section class="overlay-shell' + (overlay.locked ? ' is-locked' : '') + '">' +
+    '<div class="overlay-metrics">' + metricsMarkup + '</div></section>';
+  metricNodes = new Map([...root.querySelectorAll('[data-metric-id]')].map((node) => [node.dataset.metricId, node]));
+  groupNodes = new Map();
+  for (const node of root.querySelectorAll('[data-metric-group]')) {
+    const group = groupNodes.get(node.dataset.metricGroup) ?? [];
+    group.push(node);
+    groupNodes.set(node.dataset.metricGroup, group);
+  }
+  renderedLayoutKey = layoutKeyFor(overlay);
+  renderedLayoutIsMinimal = isMinimal;
+};
 
+const toggleToneClasses = (node, tone) => {
+  node.classList.toggle('is-warning', tone === 'is-warning');
+  node.classList.toggle('is-critical', tone === 'is-critical');
+};
+
+const updateMetricNodes = (selectedMetrics) => {
+  let valueChanged = false;
+  for (const metric of selectedMetrics) {
+    const node = metricNodes.get(metric.id);
+    if (!node) continue;
+    const value = formatValue(metric);
+    if (node.textContent !== value) {
+      node.textContent = value;
+      valueChanged = true;
+    }
+    node.title = metric.label;
+    const tone = metricToneClass(metric);
+    toggleToneClasses(node, tone);
+    if (!renderedLayoutIsMinimal) {
+      const article = node.closest('.overlay-metric');
+      if (article) {
+        article.classList.toggle('is-unavailable', metric.value === null);
+        toggleToneClasses(article, tone);
+      }
+    }
+  }
+  if (renderedLayoutIsMinimal) {
+    for (const [group, items] of groupedMetrics(selectedMetrics)) {
+      const tone = groupToneClass(items);
+      for (const node of groupNodes.get(group) ?? []) {
+        node.classList.toggle('is-unavailable', items.every((item) => item.value === null));
+        toggleToneClasses(node, tone);
+      }
+    }
+  }
+  return valueChanged;
+};
+
+const scheduleResize = (root, overlay, shouldResize) => {
+  if (!shouldResize || resizeFramePending) return;
+  resizeFramePending = true;
   requestAnimationFrame(() => {
-    const shell = document.querySelector('.overlay-shell');
-    if (!shell || selectedMetrics.length === 0) return;
+    resizeFramePending = false;
+    const shell = root.querySelector('.overlay-shell');
+    if (!shell) return;
     const bounds = shell.getBoundingClientRect();
     // 顶部浮窗两侧各留 1px 透明安全边，避免圆角抗锯齿正好贴在窗口边界时被裁切。
     const edgeGutter = overlay.mode === 'top' ? 2 : 0;
@@ -107,6 +158,29 @@ function render() {
       monitorApi.resizeOverlay(size);
     }
   });
+};
+
+function render() {
+  if (!state.config || !state.snapshot) return;
+  const { overlay } = state.config;
+  const selectedMetrics = overlay.metrics.map((id) => state.snapshot.metrics[id]).filter(Boolean);
+  const root = document.querySelector('#overlay-root');
+  const modeClass = overlay.mode === 'side'
+    ? 'mode-side side-' + overlay.sidePosition + ' side-columns-' + overlay.sideColumns
+    : 'mode-top top-' + overlay.topStyle;
+  root.className = modeClass;
+  root.style.setProperty('--scale', overlay.scale);
+  root.style.setProperty('--corner-radius', String(overlay.cornerRadius * overlay.scale) + 'px');
+  root.style.setProperty('--corner-content-inset', String(Math.ceil(overlay.cornerRadius * overlay.scale * 0.6)) + 'px');
+  root.style.setProperty('--top-columns', String(Math.min(Math.max(selectedMetrics.length, 1), 12)));
+  root.dataset.theme = state.config.theme;
+  root.dataset.health = state.snapshot.health;
+  const layoutChanged = renderedLayoutKey !== layoutKeyFor(overlay);
+  if (layoutChanged) rebuildLayout(root, overlay, selectedMetrics);
+  const valueChanged = layoutChanged ? false : updateMetricNodes(selectedMetrics);
+  const shell = root.querySelector('.overlay-shell');
+  shell?.classList.toggle('is-locked', overlay.locked);
+  scheduleResize(root, overlay, layoutChanged || valueChanged || !lastReportedSize);
 }
 
 async function boot() {

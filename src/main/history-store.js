@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const HISTORY_INTERVAL_SECONDS = 10;
@@ -67,6 +67,7 @@ export class HistoryStore {
     this.lastRecordedAt = 0;
     this.lastPrunedAt = 0;
     this.writeQueue = Promise.resolve();
+    this.fileCache = new Map();
   }
 
   getSettings() {
@@ -103,6 +104,8 @@ export class HistoryStore {
     const write = async () => {
       await mkdir(this.shardDirectory, { recursive: true });
       await appendFile(shardPath, line, 'utf8');
+      // The current-day shard is the only file that changes during normal recording.
+      this.fileCache.delete(shardPath);
       if (Date.now() - this.lastPrunedAt >= PRUNE_INTERVAL_MS) await this.pruneNow();
     };
     this.writeQueue = this.writeQueue.then(write, write);
@@ -117,9 +120,6 @@ export class HistoryStore {
   async readAll() {
     await this.writeQueue.catch(() => {});
     const cutoff = Date.now() - this.retentionHours * 60 * 60 * 1000;
-    const contents = [];
-    try { contents.push(await readFile(this.filePath, 'utf8')); } catch { /* legacy file may not exist */ }
-
     let shardNames = [];
     try { shardNames = await readdir(this.shardDirectory); } catch { /* shard directory may not exist */ }
     const firstDay = dayStartFor(cutoff);
@@ -130,11 +130,30 @@ export class HistoryStore {
         return timestamp !== null && timestamp >= firstDay && timestamp <= lastDay;
       })
       .map((name) => path.join(this.shardDirectory, name));
-    const shardContents = await Promise.all(shardPaths.map((filePath) => readFile(filePath, 'utf8').catch(() => '')));
-    contents.push(...shardContents);
+    const sourcePaths = [this.filePath, ...shardPaths];
+    const sourceSet = new Set(sourcePaths);
+    for (const cachedPath of this.fileCache.keys()) {
+      if (!sourceSet.has(cachedPath)) this.fileCache.delete(cachedPath);
+    }
+    const recordsByFile = await Promise.all(sourcePaths.map(async (filePath) => {
+      let fileStat;
+      try {
+        fileStat = await stat(filePath);
+      } catch {
+        this.fileCache.delete(filePath);
+        return [];
+      }
+      const signature = String(fileStat.size) + ':' + String(fileStat.mtimeMs);
+      const cached = this.fileCache.get(filePath);
+      if (cached?.signature === signature) return cached.records;
+      const content = await readFile(filePath, 'utf8').catch(() => '');
+      const records = parseRecords(content);
+      this.fileCache.set(filePath, { signature, records });
+      return records;
+    }));
 
-    return contents
-      .flatMap(parseRecords)
+    return recordsByFile
+      .flat()
       .filter((record) => record.capturedAt >= cutoff)
       .sort((left, right) => left.capturedAt - right.capturedAt);
   }
@@ -159,19 +178,22 @@ export class HistoryStore {
 
   async pruneFile(filePath, cutoff) {
     let content;
-    try { content = await readFile(filePath, 'utf8'); } catch { return; }
+    try { content = await readFile(filePath, 'utf8'); } catch { return false; }
     const kept = parseRecords(content)
       .filter((record) => record.capturedAt >= cutoff)
       .map((record) => JSON.stringify(record));
     const next = kept.length ? `${kept.join('\n')}\n` : '';
-    if (next === content) return;
+    if (next === content) return false;
     if (!next) {
       await unlink(filePath).catch(() => {});
-      return;
+      this.fileCache.delete(filePath);
+      return true;
     }
     const temporaryPath = `${filePath}.tmp`;
     await writeFile(temporaryPath, next, 'utf8');
     await rename(temporaryPath, filePath);
+    this.fileCache.delete(filePath);
+    return true;
   }
 
   async pruneNow() {
@@ -187,8 +209,14 @@ export class HistoryStore {
       const timestamp = shardTimestampFor(name);
       if (timestamp === null) continue;
       const filePath = path.join(this.shardDirectory, name);
-      if (timestamp + DAY_MS <= cutoff) await unlink(filePath).catch(() => {});
-      else if (timestamp <= cutoffDay) await this.pruneFile(filePath, cutoff);
+      if (timestamp + DAY_MS <= cutoff) {
+        const result = await unlink(filePath).then(() => true).catch(() => false);
+        if (result) {
+          this.fileCache.delete(filePath);
+        }
+      } else if (timestamp <= cutoffDay) {
+        await this.pruneFile(filePath, cutoff);
+      }
     }
     this.lastPrunedAt = Date.now();
   }
@@ -202,6 +230,7 @@ export class HistoryStore {
         .filter((name) => SHARD_NAME_PATTERN.test(name))
         .map((name) => unlink(path.join(this.shardDirectory, name)).catch(() => {})));
       await unlink(this.filePath).catch(() => {});
+      this.fileCache.clear();
       this.lastRecordedAt = 0;
       this.lastPrunedAt = Date.now();
     };

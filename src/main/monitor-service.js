@@ -1,10 +1,8 @@
 import { EventEmitter } from 'node:events';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import si from 'systeminformation';
 import { LhmBridge } from './lhm-bridge.js';
+import { WindowsPerfSampler } from './windows-perf-sampler.js';
 
-const execFileAsync = promisify(execFile);
 const isFiniteNumber = (value) => (typeof value === 'number' || typeof value === 'string') && Number.isFinite(Number(value));
 const numberOrNull = (value) => (isFiniteNumber(value) ? Number(value) : null);
 const nonZeroNumberOrNull = (value) => {
@@ -32,43 +30,6 @@ const formatSpeed = (bytesPerSecond, unit = 'MB/s') => {
   if (!isFiniteNumber(bytesPerSecond)) return '—';
   const amount = Number(bytesPerSecond) / (unit === 'KB/s' ? 1024 : 1024 ** 2);
   return `${amount >= 100 ? amount.toFixed(0) : amount.toFixed(1)} ${unit}`;
-};
-
-const WINDOWS_DISK_ACTIVITY_QUERY = "$counter = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -ErrorAction Stop | Where-Object { $_.Name -eq '_Total' } | Select-Object -First 1; if ($null -eq $counter) { exit 2 }; '{0}' -f [double]$counter.PercentDiskTime";
-const WINDOWS_NETWORK_ACTIVITY_QUERY = "$counters = Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction Stop; $received = ($counters | Measure-Object -Property BytesReceivedPersec -Sum).Sum; $sent = ($counters | Measure-Object -Property BytesSentPersec -Sum).Sum; '{0}|{1}' -f [double]$received, [double]$sent";
-
-const readWindowsDiskActivity = async () => {
-  if (process.platform !== 'win32') return null;
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    WINDOWS_DISK_ACTIVITY_QUERY
-  ], {
-    windowsHide: true,
-    timeout: 3_000,
-    maxBuffer: 1_024
-  });
-  const activityPercent = Number(String(stdout).trim());
-  return Number.isFinite(activityPercent) ? Math.min(100, Math.max(0, activityPercent)) : null;
-};
-
-const readWindowsNetworkActivity = async () => {
-  if (process.platform !== 'win32') return null;
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    WINDOWS_NETWORK_ACTIVITY_QUERY
-  ], {
-    windowsHide: true,
-    timeout: 3_000,
-    maxBuffer: 1_024
-  });
-  const [receivedBytesPerSecond, sentBytesPerSecond] = String(stdout).trim().split('|').map(Number);
-  return Number.isFinite(receivedBytesPerSecond) && Number.isFinite(sentBytesPerSecond)
-    ? { receivedBytesPerSecond, sentBytesPerSecond }
-    : null;
 };
 
 const sensorValue = (sensor, { zeroIsValid = false } = {}) => {
@@ -199,6 +160,7 @@ export class MonitorService extends EventEmitter {
     this.lightweightMode = false;
     this.lhm = this.createLhmBridge();
     this.history = [];
+    this.windowsPerf = new WindowsPerfSampler();
     this.lastAlertAt = new Map();
     this.setAlertPolicy(alerts);
   }
@@ -228,6 +190,7 @@ export class MonitorService extends EventEmitter {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.lhm.stop();
+    this.windowsPerf.stop();
   }
 
   setRefreshInterval(refreshMs) {
@@ -357,17 +320,19 @@ export class MonitorService extends EventEmitter {
         || alertMetrics.includes(id);
       const needsMemory = shouldSample('memory.load') || shouldSample('memory.used');
       const needsGraphics = ['gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.power', 'gpu.fan'].some(shouldSample);
+      const needsDisk = shouldSample('disk.load');
       const needsNetwork = shouldSample('network.down') || shouldSample('network.up');
       const needsEnhanced = this.lhmEnabled && ENHANCED_METRICS.some(shouldSample);
       if (!needsEnhanced && this.lhm.getStatus().status !== 'disabled') this.lhm.stop();
-      const [load, memory, cpu, graphics, temperature, diskActivity, networkActivity, lhmSensors] = await Promise.all([
+      const needsWindowsPerf = needsDisk || needsNetwork;
+      if (!needsWindowsPerf) this.windowsPerf.stop();
+      const [load, memory, cpu, graphics, temperature, windowsPerf, lhmSensors] = await Promise.all([
         shouldSample('cpu.load') ? si.currentLoad() : null,
         needsMemory ? si.mem() : null,
         shouldSample('cpu.speed') || !this.lightweightMode ? this.cached('cpu', 60_000, () => si.cpu()) : null,
         needsGraphics ? this.cached('graphics', 2_000, () => si.graphics()) : null,
         shouldSample('cpu.temp') || this.alerts.enabled ? this.cached('cpu-temperature', 5_000, () => si.cpuTemperature()) : null,
-        shouldSample('disk.load') ? this.cached('disk-activity', 900, readWindowsDiskActivity) : null,
-        needsNetwork ? this.cached('network-activity', 900, readWindowsNetworkActivity) : null,
+        needsWindowsPerf ? this.cached('windows-perf', 900, () => this.windowsPerf.sample()) : null,
         needsEnhanced ? this.cached('lhm-sensors', 2_000, () => this.lhm.sample()) : null
       ]);
 
@@ -389,9 +354,9 @@ export class MonitorService extends EventEmitter {
       const gpuMemoryTotal = numberOrNull(controller?.memoryTotal ?? controller?.vram);
       const gpuMemoryUsed = numberOrNull(controller?.memoryUsed ?? controller?.vramDynamic);
       const gpuVramLoad = gpuMemoryTotal && gpuMemoryUsed !== null ? (gpuMemoryUsed / gpuMemoryTotal) * 100 : null;
-      const diskLoad = numberOrNull(diskActivity);
-      const totalRx = numberOrNull(networkActivity?.receivedBytesPerSecond);
-      const totalTx = numberOrNull(networkActivity?.sentBytesPerSecond);
+      const diskLoad = numberOrNull(windowsPerf?.diskPercent);
+      const totalRx = numberOrNull(windowsPerf?.receivedBytesPerSecond);
+      const totalTx = numberOrNull(windowsPerf?.sentBytesPerSecond);
       const enhancedFallback = pawnIoRequired
         ? '未检测到 PawnIO 底层传感器驱动'
         : this.lhmEnabled
@@ -406,8 +371,8 @@ export class MonitorService extends EventEmitter {
         'cpu.speed': metric('cpu.speed', 'CPU 频率', cpuSpeed, 'GHz', '当前主频', 'cpu', 'activity'),
         'cpu.power': metric('cpu.power', 'CPU 功耗', sensorValue(enhanced.cpuPower), 'W', sensorDetail(enhanced.cpuPower, enhancedFallback), 'cpu', 'activity'),
         'cpu.fan': metric('cpu.fan', 'CPU 风扇', sensorValue(enhanced.cpuFan, { zeroIsValid: true }), 'RPM', sensorDetail(enhanced.cpuFan, enhancedFallback, { zeroIsValid: true }), 'cpu', 'activity'),
-        'memory.load': metric('memory.load', '内存利用率', memoryLoad, '%', `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`, 'memory', 'memory'),
-        'memory.used': metric('memory.used', '内存已用', memory?.used ? memory.used / 1024 ** 3 : null, 'GB', `可用 ${formatBytes(memory.available)}`, 'memory', 'memory'),
+        'memory.load': metric('memory.load', '内存利用率', memoryLoad, '%', `${formatBytes(memory?.used)} / ${formatBytes(memory?.total)}`, 'memory', 'memory'),
+        'memory.used': metric('memory.used', '内存已用', memory?.used ? memory.used / 1024 ** 3 : null, 'GB', `可用 ${formatBytes(memory?.available)}`, 'memory', 'memory'),
         'gpu.load': metric('gpu.load', 'GPU 利用率', gpuLoad, '%', sensorDetail(enhanced.gpuLoad, controller?.model ?? '显卡传感器'), 'gpu', 'gpu'),
         'gpu.temp': metric('gpu.temp', 'GPU 温度', gpuTemp, '°C', sensorDetail(enhanced.gpuTemp, gpuTemp === null ? '此驱动暂未提供温度' : controller?.model ?? '显卡温度'), 'gpu', 'thermometer'),
         'gpu.vram': metric('gpu.vram', '显存利用率', gpuVramLoad, '%', gpuMemoryTotal ? `${Math.round(gpuMemoryUsed ?? 0)} / ${Math.round(gpuMemoryTotal)} MB` : '显存数据不可用', 'gpu', 'gpu'),
