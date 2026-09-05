@@ -1,8 +1,14 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { HISTORY_METRIC_IDS } from './history-store.js';
+
+const DEFAULT_HISTORY_METRIC_IDS = Object.freeze([
+  'cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp',
+  'board.temp', 'disk.load', 'network.down', 'network.up'
+]);
 
 export const DEFAULT_CONFIG = Object.freeze({
-  version: 14,
+  version: 15,
   theme: 'dark',
   refreshMs: 1000,
   sensors: {
@@ -18,7 +24,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   history: {
     enabled: true,
-    retentionHours: 24
+    retentionHours: 24,
+    metricIds: DEFAULT_HISTORY_METRIC_IDS
   },
   alerts: {
     enabled: false,
@@ -88,9 +95,12 @@ export function normalizeConfig(value = {}) {
   const metrics = Array.isArray(overlay.metrics)
     ? [...new Set(overlay.metrics.filter((metric) => OVERLAY_METRICS.has(metric)))]
     : DEFAULT_CONFIG.overlay.metrics;
+  const historyMetricIds = Array.isArray(value.history?.metricIds)
+    ? [...new Set(value.history.metricIds.filter((metricId) => HISTORY_METRIC_IDS.includes(metricId)))]
+    : [...DEFAULT_CONFIG.history.metricIds];
 
   return {
-    version: 14,
+    version: 15,
     theme: ['dark', 'light', 'system'].includes(value.theme) ? value.theme : DEFAULT_CONFIG.theme,
     refreshMs: Math.round(clamp(value.refreshMs, 500, 5000, DEFAULT_CONFIG.refreshMs)),
     sensors: {
@@ -108,7 +118,8 @@ export function normalizeConfig(value = {}) {
       enabled: value.history?.enabled !== false,
       retentionHours: [1, 6, 24, 72, 168, 720].includes(Number(value.history?.retentionHours))
         ? Number(value.history.retentionHours)
-        : DEFAULT_CONFIG.history.retentionHours
+        : DEFAULT_CONFIG.history.retentionHours,
+      metricIds: historyMetricIds.length ? historyMetricIds : [...DEFAULT_CONFIG.history.metricIds]
     },
     alerts: {
       enabled: value.alerts?.enabled === true,

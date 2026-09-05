@@ -293,6 +293,15 @@ input[type="range"] { width: 100%; margin: 10px 0 0; accent-color: var(--accent)
 .danger-action { color: var(--danger); }
 .danger-action:hover { color: var(--danger); filter: brightness(1.12); }
 .history-storage-card { display: grid; gap: 1px; margin-top: 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.history-metric-control { margin-top: 24px; }
+.history-metric-selector { display: grid; gap: 2px; max-height: 238px; padding: 4px; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; background: rgba(var(--accent-rgb), .025); }
+.history-metric-selector::-webkit-scrollbar { width: 5px; }
+.history-metric-selector::-webkit-scrollbar-thumb { background: var(--line); border-radius: 20px; }
+.history-metric-row { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 6px; border-radius: 6px; color: var(--muted); font-size: 10px; cursor: pointer; }
+.history-metric-row:hover { background: var(--surface-hover); color: var(--text); }
+.history-metric-row input { margin: 0; accent-color: var(--accent); }
+.history-metric-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-metric-row small { color: var(--dim); font-size: 9px; }
 .history-storage-card > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 0; }
 .history-storage-card > div + div { border-top: 1px solid var(--line); }
 .history-storage-card span { color: var(--muted); font-size: 10px; }

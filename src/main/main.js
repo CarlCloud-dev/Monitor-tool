@@ -298,6 +298,7 @@ const persistConfig = async (draft) => {
   monitorService.setLhmMode(config.sensors.lhmMode);
   monitorService.setNetworkUnit(config.network.unit);
   monitorService.setSelectedMetrics(config.overlay.metrics);
+  monitorService.setHistorySettings(config.history);
   monitorService.setAlertPolicy(config.alerts);
   historyStore.setSettings(config.history);
   applyOverlayConfiguration();
@@ -313,6 +314,7 @@ const registerIpc = () => {
   ipcMain.handle('history:save-settings', async (_event, draft) => {
     config = await configStore.save({ ...config, history: draft });
     historyStore.setSettings(config.history);
+    monitorService.setHistorySettings(config.history);
     sendTo(mainWindow, 'history:settings-changed', historyStore.getSettings());
     return historyStore.getView();
   });
@@ -367,9 +369,12 @@ app.whenReady().then(async () => {
     networkUnit: config.network.unit,
     alerts: config.alerts,
     lhmDirectory: lhmRuntimeDirectory(),
-    selectedMetrics: config.overlay.metrics
+    selectedMetrics: config.overlay.metrics,
+    historyEnabled: config.history.enabled,
+    historyMetrics: config.history.metricIds
   });
   monitorService.setSelectedMetrics(config.overlay.metrics);
+  monitorService.setHistorySettings(config.history);
   monitorService.on('snapshot', (snapshot) => {
     sendTo(mainWindow, 'monitor:update', snapshot);
     sendTo(overlayWindow, 'monitor:update', snapshot);

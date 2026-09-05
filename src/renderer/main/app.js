@@ -222,6 +222,20 @@ function renderHistoryPage() {
 
   document.querySelector('#history-enabled').checked = settings.enabled;
   document.querySelector('#history-retention').value = String(settings.retentionHours);
+  const selectedHistoryMetricIds = new Set(Array.isArray(settings.metricIds) && settings.metricIds.length
+    ? settings.metricIds
+    : historyMetricCatalog.map((metric) => metric.id));
+  const historyMetricSelector = document.querySelector('#history-metric-selector');
+  if (historyMetricSelector) {
+    historyMetricSelector.innerHTML = historyMetricCatalog.map((meta) => {
+      const available = state.snapshot?.metrics?.[meta.id]?.value !== null && state.snapshot?.metrics?.[meta.id]?.value !== undefined;
+      return `<label class="history-metric-row">
+        <input data-history-metric="${meta.id}" type="checkbox" ${selectedHistoryMetricIds.has(meta.id) ? 'checked' : ''} />
+        <span>${meta.label}</span><small>${available ? '' : '暂不可用'}</small>
+      </label>`;
+    }).join('');
+    document.querySelector('#history-metric-count').textContent = `${selectedHistoryMetricIds.size} 项`;
+  }
 
   stateChip.className = `history-state-chip ${settings.enabled ? (hasChartData ? '' : 'is-empty') : 'is-disabled'}`;
   stateChip.innerHTML = `<span></span><b>${settings.enabled ? (history.loading ? '读取中' : hasChartData ? '记录中' : '等待记录') : '已关闭'}</b>`;
@@ -250,7 +264,7 @@ function renderHistoryPage() {
   emptyRoot.hidden = hasChartData;
   document.querySelector('#history-empty-title').textContent = settings.enabled ? (hasRecords ? '当前记录没有可展示的指标' : '还没有历史记录') : '历史记录已关闭';
   document.querySelector('#history-empty-copy').textContent = settings.enabled
-    ? (hasRecords ? '请在浮窗显示项中勾选需要记录的指标，之后会从新采样开始生成曲线。' : '开启记录后，系统会每 10 秒保存一个本地采样点。')
+    ? (hasRecords ? '请在右侧“记录指标”中勾选需要记录的指标，之后会从新采样开始生成曲线。' : '开启记录后，系统会每 10 秒保存一个本地采样点。')
     : '在右侧开启历史记录即可开始保存，不影响实时监控和桌面浮窗。';
   if (!hasChartData) {
     chartRoot.innerHTML = '';
@@ -293,8 +307,10 @@ async function saveHistorySettings() {
   const previousSettings = state.history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 24, intervalSeconds: 10 };
   const next = {
     enabled: document.querySelector('#history-enabled').checked,
-    retentionHours: Number(document.querySelector('#history-retention').value)
+    retentionHours: Number(document.querySelector('#history-retention').value),
+    metricIds: [...document.querySelectorAll('#history-metric-selector input[data-history-metric]:checked')].map((input) => input.dataset.historyMetric)
   };
+  if (!next.metricIds.length) return;
   state.historySaving = true;
   // 先更新本地状态，让开关/周期立即反馈；持久化失败时再恢复并显示错误。
   state.history.settings = { ...previousSettings, ...next };
@@ -503,6 +519,14 @@ document.addEventListener('drop', async (event) => {
 document.addEventListener('dragend', clearMetricDragState);
 
 document.addEventListener('change', async (event) => {
+  if (event.target.dataset.historyMetric) {
+    if (!event.target.checked && document.querySelectorAll('#history-metric-selector input[data-history-metric]:checked').length === 0) {
+      event.target.checked = true;
+      return;
+    }
+    await saveHistorySettings();
+    return;
+  }
   if (event.target.id === 'history-enabled' || event.target.id === 'history-retention') {
     await saveHistorySettings();
     return;

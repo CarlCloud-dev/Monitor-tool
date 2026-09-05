@@ -252,6 +252,12 @@
             <p class="helper">每 10 秒保存一个本地采样点；超过设定周期的记录会自动清除，不上传网络。</p>
           </div>
 
+          <div class="control-group history-metric-control">
+            <div class="control-label-row"><label>记录指标</label><span class="count" id="history-metric-count">0 项</span></div>
+            <p class="helper">与浮窗显示项独立；只勾选需要长期回看的指标，可减少轻量模式下的采样开销。</p>
+            <div class="history-metric-selector" id="history-metric-selector"></div>
+          </div>
+
           <div class="history-storage-card">
             <div><span>当前记录</span><strong id="history-storage-count">—</strong></div>
             <div><span>记录范围</span><strong id="history-storage-range">—</strong></div>

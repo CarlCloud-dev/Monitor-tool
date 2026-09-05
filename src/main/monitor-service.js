@@ -152,7 +152,11 @@ const summarizeLhmSensors = (sensors) => ({
 });
 
 const enhancedSensorDetail = (summary, status, mode, runtime) => {
-  if (status !== 'ready') return status === 'starting' ? '正在启动本地采集器…' : '增强采集器未就绪。';
+  if (status === 'starting') return '正在启动本地采集器…';
+  if (status === 'error' && Number(runtime?.retryInMs) > 0) {
+    return '增强采集器暂不可用，将在 ' + Math.ceil(Number(runtime.retryInMs) / 1000) + ' 秒后重试。';
+  }
+  if (status !== 'ready') return '增强采集器未就绪。';
   const describe = (label, state) => `${label}${state === 'ready' ? '已读取' : state === 'invalid' ? '已识别但数值无效' : '未上报'}`;
   const modeLabel = mode === 'elevated' ? '管理员增强' : '标准采集';
   const library = runtime?.lhmVersion ? `LHM ${runtime.lhmVersion}` : 'LHM';
@@ -169,10 +173,16 @@ const enhancedSensorDetail = (summary, status, mode, runtime) => {
 
 const HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp'];
 const HISTORY_LIMIT = 120;
+const DEFAULT_HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp', 'board.temp', 'disk.load', 'network.down', 'network.up'];
 const ENHANCED_METRICS = ['cpu.temp', 'cpu.power', 'cpu.fan', 'gpu.load', 'gpu.temp', 'gpu.power', 'gpu.fan', 'board.temp'];
 
+const historyMetricSet = (metricIds) => {
+  const selected = new Set(Array.isArray(metricIds) ? metricIds : []);
+  return selected.size ? selected : new Set(DEFAULT_HISTORY_METRICS);
+};
+
 export class MonitorService extends EventEmitter {
-  constructor({ refreshMs = 1000, lhmDirectory, lhmEnabled = false, lhmMode = 'standard', networkUnit = 'MB/s', alerts = {}, selectedMetrics = [] } = {}) {
+  constructor({ refreshMs = 1000, lhmDirectory, lhmEnabled = false, lhmMode = 'standard', networkUnit = 'MB/s', alerts = {}, selectedMetrics = [], historyEnabled = true, historyMetrics = DEFAULT_HISTORY_METRICS } = {}) {
     super();
     this.refreshMs = refreshMs;
     this.timer = null;
@@ -184,6 +194,8 @@ export class MonitorService extends EventEmitter {
     this.lhmMode = lhmMode;
     this.networkUnit = networkUnit === 'KB/s' ? 'KB/s' : 'MB/s';
     this.selectedMetricIds = new Set(Array.isArray(selectedMetrics) ? selectedMetrics : []);
+    this.historyEnabled = historyEnabled !== false;
+    this.historyMetricIds = historyMetricSet(historyMetrics);
     this.lightweightMode = false;
     this.lhm = this.createLhmBridge();
     this.history = [];
@@ -252,6 +264,13 @@ export class MonitorService extends EventEmitter {
 
   setSelectedMetrics(metricIds = []) {
     this.selectedMetricIds = new Set(Array.isArray(metricIds) ? metricIds : []);
+    this.cache.delete('lhm-sensors');
+    if (this.lightweightMode && !this.inFlight) void this.sample();
+  }
+
+  setHistorySettings(settings = {}) {
+    this.historyEnabled = settings.enabled !== false;
+    this.historyMetricIds = historyMetricSet(settings.metricIds);
     this.cache.delete('lhm-sensors');
     if (this.lightweightMode && !this.inFlight) void this.sample();
   }
@@ -332,7 +351,10 @@ export class MonitorService extends EventEmitter {
 
     try {
       const alertMetrics = this.alerts.enabled ? ['cpu.temp', 'gpu.temp'] : [];
-      const shouldSample = (id) => !this.lightweightMode || this.selectedMetricIds.has(id) || alertMetrics.includes(id);
+      const shouldSample = (id) => !this.lightweightMode
+        || this.selectedMetricIds.has(id)
+        || (this.historyEnabled && this.historyMetricIds.has(id))
+        || alertMetrics.includes(id);
       const needsMemory = shouldSample('memory.load') || shouldSample('memory.used');
       const needsGraphics = ['gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.power', 'gpu.fan'].some(shouldSample);
       const needsNetwork = shouldSample('network.down') || shouldSample('network.up');

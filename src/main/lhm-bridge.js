@@ -6,6 +6,8 @@ import path from 'node:path';
 const READY_TIMEOUT_MS = 4_000;
 const ELEVATED_READY_TIMEOUT_MS = 12_000;
 const SAMPLE_TIMEOUT_MS = 2_500;
+const RETRY_INITIAL_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const powerShellQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
@@ -25,6 +27,8 @@ export class LhmBridge {
     this.lastError = null;
     this.runtime = { lhmVersion: null, pawnIoInstalled: null, pawnIoVersion: null };
     this.intentionalStop = false;
+    this.retryDelayMs = RETRY_INITIAL_MS;
+    this.nextRetryAt = 0;
   }
 
   get executablePath() {
@@ -32,12 +36,38 @@ export class LhmBridge {
   }
 
   getStatus() {
-    return { status: this.status, lastError: this.lastError, elevated: this.elevated, ...this.runtime };
+    return {
+      status: this.status,
+      lastError: this.lastError,
+      elevated: this.elevated,
+      retryInMs: Math.max(0, this.nextRetryAt - Date.now()),
+      ...this.runtime
+    };
+  }
+
+  scheduleRetry() {
+    if (this.intentionalStop) return;
+    this.nextRetryAt = Date.now() + this.retryDelayMs;
+    this.retryDelayMs = Math.min(RETRY_MAX_MS, this.retryDelayMs * 2);
+  }
+
+  resetRetry() {
+    this.retryDelayMs = RETRY_INITIAL_MS;
+    this.nextRetryAt = 0;
+  }
+
+  closeTransport() {
+    this.writeCommand = null;
+    this.socket?.destroy();
+    this.socket = null;
+    if (this.process && !this.process.killed) this.process.kill();
+    this.process = null;
   }
 
   async start() {
     if (this.status === 'ready') return true;
     if (this.readyPromise) return this.readyPromise;
+    if (Date.now() < this.nextRetryAt) return false;
 
     try {
       await access(this.executablePath);
@@ -68,7 +98,8 @@ export class LhmBridge {
       else this.startStandard();
       await this.readyPromise;
       return true;
-    } catch {
+    } catch (error) {
+      if (this.status === 'starting') this.failStart(error?.message || 'Libre Hardware Monitor 启动失败。');
       return false;
     } finally {
       clearTimeout(timeout);
@@ -160,11 +191,9 @@ export class LhmBridge {
     if (this.status === 'error') return;
     this.status = 'error';
     this.lastError = message;
+    this.scheduleRetry();
     this.rejectReady?.(new Error(message));
-    this.writeCommand = null;
-    this.socket?.destroy();
-    this.socket = null;
-    if (this.process && !this.process.killed) this.process.kill();
+    this.closeTransport();
   }
 
   handleExit(message) {
@@ -177,6 +206,7 @@ export class LhmBridge {
     else {
       this.status = 'error';
       this.lastError = message ?? 'Libre Hardware Monitor 已停止。';
+      this.scheduleRetry();
     }
     if (this.pendingSample) {
       clearTimeout(this.pendingSample.timeout);
@@ -210,6 +240,7 @@ export class LhmBridge {
         pawnIoVersion: typeof message.pawnIoVersion === 'string' ? message.pawnIoVersion : null
       };
       this.status = 'ready';
+      this.resetRetry();
       this.resolveReady?.();
       return;
     }
@@ -238,14 +269,27 @@ export class LhmBridge {
       this.pendingSample = null;
       this.status = 'error';
       this.lastError = '等待硬件传感器数据超时。';
+      this.scheduleRetry();
+      this.closeTransport();
     }, SAMPLE_TIMEOUT_MS);
     this.pendingSample = { promise, resolve: resolveSample, timeout };
-    this.writeCommand('sample\n');
+    try {
+      this.writeCommand('sample\n');
+    } catch (error) {
+      clearTimeout(timeout);
+      this.pendingSample = null;
+      this.status = 'error';
+      this.lastError = error?.message || '无法向硬件采集器发送采样请求。';
+      this.scheduleRetry();
+      this.closeTransport();
+      resolveSample(null);
+    }
     return promise;
   }
 
   stop() {
     this.intentionalStop = true;
+    this.rejectReady?.(new Error('Libre Hardware Monitor 已停止。'));
     if (this.pendingSample) {
       clearTimeout(this.pendingSample.timeout);
       this.pendingSample.resolve(null);
@@ -270,5 +314,6 @@ export class LhmBridge {
     this.writeCommand = null;
     this.status = 'disabled';
     this.lastError = null;
+    this.resetRetry();
   }
 }
