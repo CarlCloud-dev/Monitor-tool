@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray } from 'electron';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -40,7 +40,22 @@ const updateConfig = (makeDraft) => {
 
 const PAWNIO_SETUP_SHA256 = 'a3a46226c5e2824f4cdd42be0eecbabfc672c86f7889710f5ab1e6ad385b47a0';
 const AUTO_START_ARGUMENT = '--monitor-tool-autostart';
+const PROJECT_REPOSITORY_URL = 'https://github.com/CarlCloud-dev/Monitor-tool';
 const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
+const openProjectRepository = (value) => {
+  try {
+    const url = new URL(value);
+    const isProjectRepository = url.protocol === 'https:'
+      && url.hostname === 'github.com'
+      && url.pathname.replace(/\/+$/, '') === '/CarlCloud-dev/Monitor-tool';
+    if (!isProjectRepository) return false;
+    void shell.openExternal(url.href).catch((error) => console.warn('Unable to open project link:', error.message));
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const loginItemArguments = () => app.isPackaged
   ? [AUTO_START_ARGUMENT]
@@ -253,6 +268,15 @@ const createMainWindow = () => {
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     historyStore?.setCacheActive(false);
     console.error(`Main renderer stopped: ${details.reason}`);
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openProjectRepository(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith('file:')) return;
+    event.preventDefault();
+    openProjectRepository(url);
   });
   mainWindow.on('close', (event) => {
     historyStore?.setCacheActive(false);

@@ -2,6 +2,11 @@
 
 一个面向 Windows 的轻量硬件状态监控桌面端原型。它提供可配置的桌面浮窗、实时仪表盘和按需展示的硬件指标。
 
+## 作者与项目
+
+- 作者：CarlCloud
+- GitHub：[CarlCloud-dev/Monitor-tool](https://github.com/CarlCloud-dev/Monitor-tool)
+
 ## 当前能力
 
 - CPU 利用率、频率与可用时的温度

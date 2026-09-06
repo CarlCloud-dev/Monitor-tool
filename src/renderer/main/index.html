@@ -19,6 +19,7 @@
           <div class="nav-label">工作台</div>
           <button class="nav-item active" data-page="overview" type="button"><span class="nav-icon">⌁</span>实时概览</button>
           <button class="nav-item" data-page="history" type="button"><span class="nav-icon">◫</span>历史趋势</button>
+          <button class="nav-item" data-page="about" type="button"><span class="nav-icon">◌</span>关于</button>
 
           <section class="sidebar-theme" id="theme-picker">
             <div class="nav-label">主题颜色</div>
@@ -102,6 +103,40 @@
             <div class="history-empty" id="history-empty" hidden>
               <span>◌</span><b id="history-empty-title">还没有历史记录</b><p id="history-empty-copy">开启记录后，系统会按固定间隔保存采样数据。</p>
             </div>
+          </section>
+        </main>
+
+        <main class="content about-page" id="about-page" hidden>
+          <section class="about-hero">
+            <span class="about-mark"><img src="../assets/logo-mark.svg" alt="" /></span>
+            <div>
+              <p class="eyebrow">ABOUT MONITOR TOOL</p>
+              <h1>Monitor Tool</h1>
+              <p>一款面向 Windows 的轻量硬件状态监控工具，用清晰、紧凑的浮窗持续展示本机关键指标。</p>
+            </div>
+          </section>
+
+          <section class="about-grid">
+            <article class="about-card">
+              <span>产品定位</span>
+              <strong>轻量桌面监控</strong>
+              <p>实时概览、可自定义浮窗、硬件传感器和本地历史趋势整合在同一应用中。</p>
+            </article>
+            <article class="about-card">
+              <span>作者</span>
+              <strong>CarlCloud</strong>
+              <p>专注于将日常工作流做成可靠、简洁的桌面工具。</p>
+            </article>
+            <article class="about-card">
+              <span>开源项目</span>
+              <a class="about-link" href="https://github.com/CarlCloud-dev/Monitor-tool" target="_blank" rel="noreferrer">GitHub 仓库 <i>↗</i></a>
+              <p>查看源代码、更新说明和最新 Windows 安装包。</p>
+            </article>
+          </section>
+
+          <section class="about-notice">
+            <div><span>本地优先</span><h2>你的硬件数据留在本机</h2></div>
+            <p>实时采样、浮窗显示与历史记录均在本地运行；部分温度、功耗和风扇读数会因硬件、驱动或系统权限而不可用，应用会明确显示状态，不会伪造数据。</p>
           </section>
         </main>
 

@@ -330,10 +330,11 @@ function releaseHistoryView() {
 }
 
 function setPage(page) {
-  state.page = page === 'history' ? 'history' : 'overview';
+  state.page = ['history', 'about'].includes(page) ? page : 'overview';
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
   document.querySelector('#overview-page').hidden = state.page !== 'overview';
   document.querySelector('#history-page').hidden = state.page !== 'history';
+  document.querySelector('#about-page').hidden = state.page !== 'about';
   document.querySelector('#monitor-settings-panel').hidden = state.page !== 'overview';
   document.querySelector('#history-settings-panel').hidden = state.page !== 'history';
   if (state.page === 'history') {
