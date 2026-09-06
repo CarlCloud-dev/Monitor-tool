@@ -3,7 +3,7 @@ import si from 'systeminformation';
 import { LhmBridge } from './lhm-bridge.js';
 import { WindowsPerfSampler } from './windows-perf-sampler.js';
 
-const isFiniteNumber = (value) => (typeof value === 'number' || typeof value === 'string') && Number.isFinite(Number(value));
+const isFiniteNumber = (value) => (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value));
 const numberOrNull = (value) => (isFiniteNumber(value) ? Number(value) : null);
 const nonZeroNumberOrNull = (value) => {
   const numeric = numberOrNull(value);
@@ -332,7 +332,7 @@ export class MonitorService extends EventEmitter {
         shouldSample('cpu.speed') || !this.lightweightMode ? this.cached('cpu', 60_000, () => si.cpu()) : null,
         needsGraphics ? this.cached('graphics', 2_000, () => si.graphics()) : null,
         shouldSample('cpu.temp') || this.alerts.enabled ? this.cached('cpu-temperature', 5_000, () => si.cpuTemperature()) : null,
-        needsWindowsPerf ? this.cached('windows-perf', 900, () => this.windowsPerf.sample()) : null,
+        needsWindowsPerf ? this.cached(`windows-perf:${needsDisk}:${needsNetwork}`, 900, () => this.windowsPerf.sample({ disk: needsDisk, network: needsNetwork })) : null,
         needsEnhanced ? this.cached('lhm-sensors', 2_000, () => this.lhm.sample()) : null
       ]);
 

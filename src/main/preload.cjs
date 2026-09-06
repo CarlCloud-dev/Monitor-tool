@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('monitorApi', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (draft) => ipcRenderer.invoke('settings:save', draft),
   getHistory: () => ipcRenderer.invoke('history:get'),
+  setHistoryActive: (active) => ipcRenderer.send('history:active', active),
   saveHistorySettings: (draft) => ipcRenderer.invoke('history:save-settings', draft),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   installPawnIo: () => ipcRenderer.invoke('support:install-pawnio'),

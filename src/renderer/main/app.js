@@ -1,3 +1,6 @@
+import { finiteOrNull } from '../../shared/history-series.js';
+import { seriesSvg } from './history-chart.js';
+
 const { monitorApi } = window;
 
 const state = {
@@ -9,7 +12,7 @@ const state = {
   pawnIoMessage: null,
   themeMenuOpen: false,
   page: 'overview',
-  history: { settings: null, records: [], totalCount: 0, from: null, to: null, loading: false, error: null }
+  history: { settings: null, series: {}, totalCount: 0, from: null, to: null, loading: false, error: null }
 };
 const primaryMetricIds = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp', 'gpu.vram'];
 const trendMetricIds = ['cpu.load', 'cpu.temp', 'gpu.load', 'gpu.temp'];
@@ -29,6 +32,8 @@ const historyMetricCatalog = [
   { id: 'network.up', label: '上传速率', unit: 'B/s', group: 'network' }
 ];
 let historyRequestId = 0;
+let pendingHistorySettings = null;
+let confirmedHistorySettings = null;
 
 // 只对“数值越高越需要留意”的指标着色，避免频率、容量、网络速率等正常高值产生误报。
 // 第一档为警示色，第二档为临界红色；与系统健康状态的 80/90 阈值保持一致。
@@ -70,8 +75,8 @@ const historyTimeLabel = (timestamp, includeDate = false) => {
 };
 
 const historyValueLabel = (value, unit) => {
-  if (!Number.isFinite(Number(value))) return '—';
-  const numeric = Number(value);
+  const numeric = finiteOrNull(value);
+  if (numeric === null) return '—';
   if (unit === '%') return `${numeric.toFixed(0)}%`;
   if (unit === '°C') return `${numeric.toFixed(0)}°`;
   if (unit === 'W') return `${numeric.toFixed(1)} W`;
@@ -177,46 +182,15 @@ function renderTrends() {
 }
 
 function sparkline(samples, unit, group) {
-  const validValues = samples.filter((value) => Number.isFinite(value));
-  if (!validValues.length) return '<svg class="sparkline empty" viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0 22 H100" /></svg>';
-  const maximum = unit === '°C' ? Math.max(100, ...validValues, 1) : 100;
-  const minimum = unit === '°C' ? Math.max(0, Math.min(35, ...validValues)) : 0;
-  const range = Math.max(1, maximum - minimum);
-  const points = samples.map((value, index) => {
-    if (!Number.isFinite(value)) return null;
-    const x = samples.length > 1 ? (index / (samples.length - 1)) * 100 : 50;
-    const y = 36 - ((value - minimum) / range) * 30;
-    return `${x.toFixed(2)},${Math.max(3, Math.min(37, y)).toFixed(2)}`;
-  }).filter(Boolean);
-  if (points.length === 1) points.push(`100,${points[0].split(',')[1]}`);
-  return `<svg class="sparkline ${group}" viewBox="0 0 100 40" preserveAspectRatio="none"><polyline points="${points.join(' ')}" /></svg>`;
-}
-
-function historySparkline(samples, unit, group) {
-  if (unit === '%' || unit === '°C') return sparkline(samples, unit, group);
-  const validValues = samples.filter((value) => Number.isFinite(Number(value))).map(Number);
-  if (!validValues.length) return '<svg class="sparkline empty" viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0 22 H100" /></svg>';
-  const minimum = Math.min(...validValues);
-  const maximum = Math.max(...validValues);
-  const padding = Math.max(1, (maximum - minimum) * 0.12);
-  const lower = minimum - padding;
-  const range = Math.max(1, maximum - minimum + padding * 2);
-  const points = samples.map((value, index) => {
-    if (!Number.isFinite(Number(value))) return null;
-    const x = samples.length > 1 ? (index / (samples.length - 1)) * 100 : 50;
-    const y = 36 - ((Number(value) - lower) / range) * 30;
-    return `${x.toFixed(2)},${Math.max(3, Math.min(37, y)).toFixed(2)}`;
-  }).filter(Boolean);
-  if (points.length === 1) points.push(`100,${points[0].split(',')[1]}`);
-  return `<svg class="sparkline ${group}" viewBox="0 0 100 40" preserveAspectRatio="none"><polyline points="${points.join(' ')}" /></svg>`;
+  return seriesSvg(samples.map((value, index) => ({ value, capturedAt: index })), unit, group);
 }
 
 function renderHistoryPage() {
   const history = state.history;
   const settings = history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 24, intervalSeconds: 10 };
-  const records = history.records ?? [];
-  const hasRecords = settings.enabled && records.length > 0;
-  const hasChartData = hasRecords && records.some((record) => Object.values(record.values ?? {}).some((value) => Number.isFinite(Number(value))));
+  const series = history.series ?? {};
+  const hasRecords = history.totalCount > 0;
+  const hasChartData = hasRecords && Object.values(series).some((item) => item.stats.count > 0);
   const stateChip = document.querySelector('#history-state-chip');
   if (!stateChip) return;
 
@@ -227,13 +201,18 @@ function renderHistoryPage() {
     : historyMetricCatalog.map((metric) => metric.id));
   const historyMetricSelector = document.querySelector('#history-metric-selector');
   if (historyMetricSelector) {
-    historyMetricSelector.innerHTML = historyMetricCatalog.map((meta) => {
+    if (!historyMetricSelector.firstElementChild) historyMetricSelector.innerHTML = historyMetricCatalog.map((meta) => {
       const available = state.snapshot?.metrics?.[meta.id]?.value !== null && state.snapshot?.metrics?.[meta.id]?.value !== undefined;
       return `<label class="history-metric-row">
         <input data-history-metric="${meta.id}" type="checkbox" ${selectedHistoryMetricIds.has(meta.id) ? 'checked' : ''} />
         <span>${meta.label}</span><small>${available ? '' : '暂不可用'}</small>
       </label>`;
     }).join('');
+    for (const input of historyMetricSelector.querySelectorAll('input[data-history-metric]')) {
+      input.checked = selectedHistoryMetricIds.has(input.dataset.historyMetric);
+      const value = state.snapshot?.metrics?.[input.dataset.historyMetric]?.value;
+      input.closest('label').querySelector('small').textContent = finiteOrNull(value) === null ? '暂不可用' : '';
+    }
     document.querySelector('#history-metric-count').textContent = `${selectedHistoryMetricIds.size} 项`;
   }
 
@@ -244,7 +223,7 @@ function renderHistoryPage() {
     ? `每 ${settings.intervalSeconds ?? 10} 秒保存一次`
     : '不会写入本地文件';
   document.querySelector('#history-summary-retention').textContent = historyDurationLabel(settings.retentionHours);
-  document.querySelector('#history-summary-count').textContent = history.loading ? '读取中' : `${history.totalCount ?? records.length}`;
+  document.querySelector('#history-summary-count').textContent = history.loading ? '读取中' : `${history.totalCount ?? 0}`;
   document.querySelector('#history-summary-range').textContent = history.from
     ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)}`
     : '暂无有效记录';
@@ -252,8 +231,8 @@ function renderHistoryPage() {
     ? history.error
     : history.loading
     ? '正在读取本地记录…'
-    : hasRecords ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)} · 最多展示 1200 个采样点` : '开启记录后会在这里显示本地历史曲线';
-  document.querySelector('#history-storage-count').textContent = history.loading ? '读取中' : `${history.totalCount ?? records.length} 个采样点`;
+    : hasRecords ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)} · 每项最多 1200 点，保留峰值；统计基于全部记录` : '开启记录后会在这里显示本地历史曲线';
+  document.querySelector('#history-storage-count').textContent = history.loading ? '读取中' : `${history.totalCount ?? 0} 个采样点`;
   document.querySelector('#history-storage-range').textContent = history.from
     ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)}`
     : '暂无记录';
@@ -272,21 +251,20 @@ function renderHistoryPage() {
   }
 
   chartRoot.innerHTML = historyMetricCatalog.map((meta) => {
-    const values = records.map((record) => record.values?.[meta.id] ?? null);
-    const validValues = values.filter((value) => Number.isFinite(Number(value))).map(Number);
-    const latest = validValues.at(-1);
-    const minimum = validValues.length ? Math.min(...validValues) : null;
-    const maximum = validValues.length ? Math.max(...validValues) : null;
-    if (!validValues.length) return '';
+    const item = series[meta.id];
+    if (!item?.stats.count) return '';
+    const { latest, minimum, maximum } = item.stats;
     return `<article class="history-chart-card history-${meta.group}">
       <header><span>${meta.label}</span><strong>${historyValueLabel(latest, meta.unit)}</strong></header>
-      ${historySparkline(values, meta.unit, meta.group)}
+      ${seriesSvg(item.points, meta.unit, meta.group, history.from, history.to)}
       <footer><span>最低 ${historyValueLabel(minimum, meta.unit)}</span><span>最高 ${historyValueLabel(maximum, meta.unit)}</span></footer>
     </article>`;
   }).join('');
 }
 
 async function loadHistory() {
+  if (state.page !== 'history' || document.hidden || state.historySaving) return;
+  monitorApi.setHistoryActive(true);
   const requestId = ++historyRequestId;
   state.history.loading = true;
   state.history.error = null;
@@ -294,7 +272,8 @@ async function loadHistory() {
   try {
     const view = await monitorApi.getHistory();
     if (requestId !== historyRequestId) return;
-    state.history = { ...state.history, ...view, loading: false, error: null };
+    const { settings: _settings, ...data } = view;
+    state.history = { ...state.history, ...data, loading: false, error: null };
   } catch (error) {
     if (requestId !== historyRequestId) return;
     state.history = { ...state.history, loading: false, error: error.message || '历史记录读取失败' };
@@ -303,7 +282,6 @@ async function loadHistory() {
 }
 
 async function saveHistorySettings() {
-  if (state.historySaving) return;
   const previousSettings = state.history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 24, intervalSeconds: 10 };
   const next = {
     enabled: document.querySelector('#history-enabled').checked,
@@ -311,21 +289,44 @@ async function saveHistorySettings() {
     metricIds: [...document.querySelectorAll('#history-metric-selector input[data-history-metric]:checked')].map((input) => input.dataset.historyMetric)
   };
   if (!next.metricIds.length) return;
-  state.historySaving = true;
-  // 先更新本地状态，让开关/周期立即反馈；持久化失败时再恢复并显示错误。
+  // Each change updates the visible draft immediately. During a save, merge
+  // subsequent changes into the next draft instead of discarding the clicks.
+  pendingHistorySettings = next;
+  historyRequestId += 1;
+  state.history.loading = false;
   state.history.settings = { ...previousSettings, ...next };
+  state.history.error = null;
   renderHistoryPage();
+  if (state.historySaving) return;
+  state.historySaving = true;
   try {
-    const view = await monitorApi.saveHistorySettings(next);
-    state.history = { ...state.history, ...view, loading: false, error: null };
-    if (state.config) state.config.history = view.settings;
-  } catch (error) {
-    state.history.settings = previousSettings;
-    state.history.error = error.message || '历史设置保存失败';
+    while (pendingHistorySettings) {
+      const draft = pendingHistorySettings;
+      pendingHistorySettings = null;
+      try {
+        const settings = await monitorApi.saveHistorySettings(draft);
+        confirmedHistorySettings = settings;
+        if (state.config) state.config.history = settings;
+        if (!pendingHistorySettings) state.history.settings = settings;
+        state.history.error = null;
+      } catch (error) {
+        if (!pendingHistorySettings) state.history.settings = confirmedHistorySettings ?? previousSettings;
+        state.history.error = error.message || '历史设置保存失败';
+      }
+    }
   } finally {
     state.historySaving = false;
     renderHistoryPage();
+    if (!state.history.error) void loadHistory();
   }
+}
+
+function releaseHistoryView() {
+  historyRequestId += 1;
+  state.history.loading = false;
+  state.history.series = {};
+  document.querySelector('#history-charts').innerHTML = '';
+  monitorApi.setHistoryActive(false);
 }
 
 function setPage(page) {
@@ -338,8 +339,15 @@ function setPage(page) {
   if (state.page === 'history') {
     renderHistoryPage();
     void loadHistory();
+  } else {
+    releaseHistoryView();
   }
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseHistoryView();
+  else if (state.page === 'history') void loadHistory();
+});
 
 function renderSettings() {
   if (!state.config) return;
@@ -574,9 +582,15 @@ document.addEventListener('click', async (event) => {
   }
   if (event.target.id === 'history-clear') {
     if (!window.confirm('确定清空全部历史记录吗？此操作不可撤销。')) return;
-    const view = await monitorApi.clearHistory();
-    state.history = { ...state.history, ...view, loading: false, error: null };
-    renderHistoryPage();
+    historyRequestId += 1;
+    try {
+      await monitorApi.clearHistory();
+      state.history = { ...state.history, series: {}, totalCount: 0, from: null, to: null, loading: false, error: null };
+      await loadHistory();
+    } catch (error) {
+      state.history.error = error.message || '历史记录清空失败';
+      renderHistoryPage();
+    }
     return;
   }
   if (!state.config || state.saving) return;
@@ -689,6 +703,7 @@ async function boot() {
   state.config = config;
   state.snapshot = snapshot;
   state.history.settings = config.history;
+  confirmedHistorySettings = config.history;
   renderSettings();
   renderSnapshot();
   monitorApi.onMonitorUpdate((snapshotUpdate) => {
@@ -703,9 +718,17 @@ async function boot() {
     if (state.page === 'history' && !state.history.loading) void loadHistory();
   });
   monitorApi.onHistorySettingsChanged((settingsUpdate) => {
+    // Our queued draft is newer than the acknowledgement for an earlier save.
+    if (state.historySaving) return;
+    historyRequestId += 1;
+    state.history.loading = false;
+    confirmedHistorySettings = settingsUpdate;
     state.history.settings = settingsUpdate;
     if (state.config) state.config.history = settingsUpdate;
-    if (state.page === 'history') renderHistoryPage();
+    if (state.page === 'history') {
+      renderHistoryPage();
+      void loadHistory();
+    }
   });
 }
 

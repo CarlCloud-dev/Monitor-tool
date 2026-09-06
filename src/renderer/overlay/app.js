@@ -10,6 +10,26 @@ let resizeFramePending = false;
 const iconFor = (icon) => ({ cpu: '◌', thermometer: '∿', activity: '⌁', memory: '▦', gpu: '◇', disk: '◫', download: '↓', upload: '↑' }[icon] ?? '•');
 const groupLabel = (group) => ({ cpu: 'CPU', memory: '内存', gpu: 'GPU', board: '主板', storage: '磁盘', network: '网络' }[group] ?? '状态');
 
+// Keep the final structure and size before the first sensor sample arrives.
+const metricPlaceholders = Object.fromEntries([
+  ['cpu.load', 'CPU 利用率', '%', 'cpu', 'cpu'],
+  ['cpu.temp', 'CPU 温度', '°C', 'cpu', 'thermometer'],
+  ['cpu.speed', 'CPU 频率', 'GHz', 'cpu', 'activity'],
+  ['cpu.power', 'CPU 功耗', 'W', 'cpu', 'activity'],
+  ['cpu.fan', 'CPU 风扇', 'RPM', 'cpu', 'activity'],
+  ['memory.load', '内存利用率', '%', 'memory', 'memory'],
+  ['memory.used', '内存已用', 'GB', 'memory', 'memory'],
+  ['gpu.load', 'GPU 利用率', '%', 'gpu', 'gpu'],
+  ['gpu.temp', 'GPU 温度', '°C', 'gpu', 'thermometer'],
+  ['gpu.vram', '显存利用率', '%', 'gpu', 'gpu'],
+  ['gpu.power', 'GPU 功耗', 'W', 'gpu', 'activity'],
+  ['gpu.fan', 'GPU 风扇', 'RPM', 'gpu', 'activity'],
+  ['board.temp', '主板温度', '°C', 'board', 'thermometer'],
+  ['disk.load', '磁盘利用率', '%', 'storage', 'disk'],
+  ['network.down', '下载速率', 'B/s', 'network', 'download'],
+  ['network.up', '上传速率', 'B/s', 'network', 'upload']
+].map(([id, label, unit, group, icon]) => [id, { id, label, unit, group, icon, value: null }]));
+
 // 只对高负载、高温或高功耗/高转速指标着色；第一档警示，第二档临界红色。
 const toneThresholds = {
   'cpu.load': [80, 90],
@@ -163,7 +183,7 @@ const scheduleResize = (root, overlay, shouldResize) => {
 function render() {
   if (!state.config || !state.snapshot) return;
   const { overlay } = state.config;
-  const selectedMetrics = overlay.metrics.map((id) => state.snapshot.metrics[id]).filter(Boolean);
+  const selectedMetrics = overlay.metrics.map((id) => state.snapshot.metrics?.[id] ?? metricPlaceholders[id]).filter(Boolean);
   const root = document.querySelector('#overlay-root');
   const modeClass = overlay.mode === 'side'
     ? 'mode-side side-' + overlay.sidePosition + ' side-columns-' + overlay.sideColumns

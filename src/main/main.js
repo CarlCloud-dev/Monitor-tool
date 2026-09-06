@@ -24,6 +24,19 @@ let positionSaveTimer;
 let shouldPersistManualOverlayMove = false;
 let hasManualOverlayPosition = false;
 let historyStore;
+let configWriteQueue = Promise.resolve();
+
+// Compose drafts only when their turn starts, so history and monitor settings
+// cannot overwrite each other with an older snapshot or race on the same temp file.
+const updateConfig = (makeDraft) => {
+  const write = async () => {
+    config = await configStore.save(makeDraft(config));
+    return config;
+  };
+  const pending = configWriteQueue.then(write, write);
+  configWriteQueue = pending.catch(() => {});
+  return pending;
+};
 
 const PAWNIO_SETUP_SHA256 = 'a3a46226c5e2824f4cdd42be0eecbabfc672c86f7889710f5ab1e6ad385b47a0';
 const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
@@ -221,9 +234,11 @@ const createMainWindow = () => {
     console.error(`Main window failed to load (${errorCode}): ${errorDescription}`);
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    historyStore?.setCacheActive(false);
     console.error(`Main renderer stopped: ${details.reason}`);
   });
   mainWindow.on('close', (event) => {
+    historyStore?.setCacheActive(false);
     if (!isQuitting && config?.behavior?.minimizeToTray) {
       event.preventDefault();
       if (config.behavior.lightweightMode !== false) {
@@ -236,8 +251,10 @@ const createMainWindow = () => {
     }
   });
   mainWindow.on('closed', () => {
+    historyStore?.setCacheActive(false);
     mainWindow = null;
   });
+  mainWindow.on('hide', () => historyStore?.setCacheActive(false));
   mainWindow.loadFile(path.join(rendererPath, 'main', 'index.html'));
 };
 
@@ -280,7 +297,7 @@ const createOverlayWindow = () => {
     positionSaveTimer = setTimeout(async () => {
       if (!overlayWindow || overlayWindow.isDestroyed()) return;
       const [savedX, savedY] = overlayWindow.getPosition();
-      config = await configStore.save({ ...config, overlay: { ...config.overlay, bounds: { x: savedX, y: savedY } } });
+      await updateConfig((current) => ({ ...current, overlay: { ...current.overlay, bounds: { x: savedX, y: savedY } } }));
       shouldPersistManualOverlayMove = false;
       broadcastSettings();
     }, 450);
@@ -289,7 +306,7 @@ const createOverlayWindow = () => {
 
 const persistConfig = async (draft) => {
   // 历史记录由独立页面保存，实时监控设置不能覆盖它的开关和保留时长。
-  config = await configStore.save({ ...draft, history: config.history });
+  await updateConfig((current) => ({ ...draft, history: current.history }));
   hasManualOverlayPosition = Boolean(config.overlay.bounds);
   nativeTheme.themeSource = config.theme;
   applyMainWindowTheme();
@@ -310,18 +327,24 @@ const registerIpc = () => {
   ipcMain.handle('monitor:get-snapshot', () => monitorService.getSnapshot());
   ipcMain.handle('settings:get', () => config);
   ipcMain.handle('settings:save', (_event, draft) => persistConfig(draft));
+  ipcMain.on('history:active', (event, active) => {
+    if (event.sender === mainWindow?.webContents) {
+      historyStore.setCacheActive(active === true && mainWindow.isVisible());
+    }
+  });
   ipcMain.handle('history:get', () => historyStore.getView());
   ipcMain.handle('history:save-settings', async (_event, draft) => {
-    config = await configStore.save({ ...config, history: draft });
+    await updateConfig((current) => ({ ...current, history: draft }));
     historyStore.setSettings(config.history);
     monitorService.setHistorySettings(config.history);
     sendTo(mainWindow, 'history:settings-changed', historyStore.getSettings());
-    return historyStore.getView();
+    // Saving settings does not wait for reading/parsing the history files.
+    return historyStore.getSettings();
   });
   ipcMain.handle('history:clear', async () => {
     await historyStore.clear();
     sendTo(mainWindow, 'history:changed', null);
-    return historyStore.getView();
+    return { cleared: true };
   });
   ipcMain.handle('support:install-pawnio', () => installPawnIo());
   ipcMain.handle('overlay:reset-position', async () => {
@@ -379,7 +402,7 @@ app.whenReady().then(async () => {
     sendTo(mainWindow, 'monitor:update', snapshot);
     sendTo(overlayWindow, 'monitor:update', snapshot);
     void historyStore.recordSnapshot(snapshot).then((recorded) => {
-      if (recorded) sendTo(mainWindow, 'history:changed', null);
+      if (recorded && mainWindow?.isVisible()) sendTo(mainWindow, 'history:changed', null);
     });
   });
   monitorService.on('error', (error) => {
@@ -409,6 +432,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  historyStore?.setCacheActive(false);
   tray?.destroy();
   monitorService?.stop();
 });

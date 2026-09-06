@@ -1,5 +1,7 @@
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { buildMetricSeries, finiteOrNull } from '../shared/history-series.js';
 
 export const HISTORY_INTERVAL_SECONDS = 10;
 export const HISTORY_RETENTION_OPTIONS = [1, 6, 24, 72, 168, 720];
@@ -17,6 +19,9 @@ const LEGACY_FILE_NAME = 'monitor-history.jsonl';
 const SHARD_DIRECTORY_NAME = 'monitor-history';
 const SHARD_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_CACHE_BYTES = 8 * 1024 * 1024;
+const MAX_CACHE_FILES = 4;
+const CACHE_IDLE_MS = 60_000;
 
 const retentionFor = (value) => {
   const numeric = Number(value);
@@ -27,14 +32,6 @@ const metricIdsFor = (value) => {
   if (!Array.isArray(value)) return [...HISTORY_METRIC_IDS];
   const selected = [...new Set(value.filter((id) => HISTORY_METRIC_IDS.includes(id)))];
   return selected.length ? selected : [...HISTORY_METRIC_IDS];
-};
-
-const finiteOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
-
-const downsample = (records, maxPoints) => {
-  if (records.length <= maxPoints) return records;
-  const step = (records.length - 1) / (maxPoints - 1);
-  return Array.from({ length: maxPoints }, (_, index) => records[Math.round(index * step)]);
 };
 
 const dayStartFor = (timestamp) => {
@@ -68,6 +65,39 @@ export class HistoryStore {
     this.lastPrunedAt = 0;
     this.writeQueue = Promise.resolve();
     this.fileCache = new Map();
+    this.cacheActive = false;
+    this.cacheEpoch = 0;
+    this.cacheTimer = null;
+    this.viewPromise = null;
+  }
+
+  releaseCache() {
+    clearTimeout(this.cacheTimer);
+    this.cacheTimer = null;
+    this.cacheEpoch += 1;
+    this.fileCache.clear();
+    this.viewPromise = null;
+  }
+
+  setCacheActive(active) {
+    this.cacheActive = active === true;
+    if (!this.cacheActive) this.releaseCache();
+  }
+
+  cacheFile(filePath, entry, epoch) {
+    // Do not repopulate caches after leaving the history page during an async read.
+    if (!this.cacheActive || epoch !== this.cacheEpoch || entry.bytes > MAX_CACHE_BYTES) return;
+    this.fileCache.delete(filePath);
+    this.fileCache.set(filePath, entry);
+    let bytes = [...this.fileCache.values()].reduce((sum, item) => sum + item.bytes, 0);
+    while (bytes > MAX_CACHE_BYTES || this.fileCache.size > MAX_CACHE_FILES) {
+      const oldest = this.fileCache.keys().next().value;
+      bytes -= this.fileCache.get(oldest).bytes;
+      this.fileCache.delete(oldest);
+    }
+    clearTimeout(this.cacheTimer);
+    this.cacheTimer = setTimeout(() => this.releaseCache(), CACHE_IDLE_MS);
+    this.cacheTimer.unref?.();
   }
 
   getSettings() {
@@ -85,9 +115,12 @@ export class HistoryStore {
     const nextRetention = retentionFor(settings.retentionHours);
     const nextMetricIds = metricIdsFor(settings.metricIds);
     const retentionChanged = nextRetention !== this.retentionHours;
+    const settingsChanged = retentionChanged || wasEnabled !== nextEnabled
+      || nextMetricIds.join(',') !== this.metricIds.join(',');
     this.enabled = nextEnabled;
     this.retentionHours = nextRetention;
     this.metricIds = nextMetricIds;
+    if (settingsChanged) this.releaseCache();
     if (!wasEnabled && nextEnabled) this.lastRecordedAt = 0;
     if (retentionChanged) void this.prune();
     return this.getSettings();
@@ -118,6 +151,7 @@ export class HistoryStore {
   }
 
   async readAll() {
+    const epoch = this.cacheEpoch;
     await this.writeQueue.catch(() => {});
     const cutoff = Date.now() - this.retentionHours * 60 * 60 * 1000;
     let shardNames = [];
@@ -135,39 +169,61 @@ export class HistoryStore {
     for (const cachedPath of this.fileCache.keys()) {
       if (!sourceSet.has(cachedPath)) this.fileCache.delete(cachedPath);
     }
-    const recordsByFile = await Promise.all(sourcePaths.map(async (filePath) => {
+    const allRecords = [];
+    // Read one shard at a time, avoiding simultaneous JSON buffers for all 30 days.
+    for (const filePath of sourcePaths.sort()) {
+      if (epoch !== this.cacheEpoch) return [];
       let fileStat;
       try {
         fileStat = await stat(filePath);
       } catch {
         this.fileCache.delete(filePath);
-        return [];
+        continue;
       }
       const signature = String(fileStat.size) + ':' + String(fileStat.mtimeMs);
       const cached = this.fileCache.get(filePath);
-      if (cached?.signature === signature) return cached.records;
-      const content = await readFile(filePath, 'utf8').catch(() => '');
-      const records = parseRecords(content);
-      this.fileCache.set(filePath, { signature, records });
-      return records;
-    }));
-
-    return recordsByFile
-      .flat()
-      .filter((record) => record.capturedAt >= cutoff)
-      .sort((left, right) => left.capturedAt - right.capturedAt);
+      const records = cached?.signature === signature
+        ? cached.records
+        : parseRecords(await readFile(filePath, 'utf8').catch(() => ''));
+      if (epoch !== this.cacheEpoch) return [];
+      // Conservative accounting for parsed objects as well as serialized bytes.
+      this.cacheFile(filePath, { signature, records, bytes: Math.max(fileStat.size * 4, records.length * 1024) }, epoch);
+      for (const record of records) {
+        if (record.capturedAt >= cutoff) allRecords.push(record);
+      }
+      await yieldToEventLoop();
+    }
+    return allRecords.sort((left, right) => left.capturedAt - right.capturedAt);
   }
 
-  async getView() {
+  getView() {
+    if (this.viewPromise) return this.viewPromise;
+    const pending = this.buildView().finally(() => {
+      if (this.viewPromise === pending) this.viewPromise = null;
+    });
+    this.viewPromise = pending;
+    return pending;
+  }
+
+  async buildView() {
+    const epoch = this.cacheEpoch;
+    const cancelledView = () => ({ settings: this.getSettings(), totalCount: 0, from: null, to: null, series: {} });
     const records = await this.readAll();
     const first = records[0]?.capturedAt ?? null;
     const last = records.at(-1)?.capturedAt ?? null;
+    const series = {};
+    for (const id of HISTORY_METRIC_IDS) {
+      if (epoch !== this.cacheEpoch) return cancelledView();
+      series[id] = buildMetricSeries(records, id, MAX_RESPONSE_POINTS, HISTORY_INTERVAL_MS * 2);
+      await yieldToEventLoop();
+    }
+    if (epoch !== this.cacheEpoch) return cancelledView();
     return {
       settings: this.getSettings(),
       totalCount: records.length,
       from: first,
       to: last,
-      records: downsample(records, MAX_RESPONSE_POINTS)
+      series
     };
   }
 
@@ -230,7 +286,7 @@ export class HistoryStore {
         .filter((name) => SHARD_NAME_PATTERN.test(name))
         .map((name) => unlink(path.join(this.shardDirectory, name)).catch(() => {})));
       await unlink(this.filePath).catch(() => {});
-      this.fileCache.clear();
+      this.releaseCache();
       this.lastRecordedAt = 0;
       this.lastPrunedAt = Date.now();
     };
