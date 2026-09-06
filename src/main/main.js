@@ -39,7 +39,24 @@ const updateConfig = (makeDraft) => {
 };
 
 const PAWNIO_SETUP_SHA256 = 'a3a46226c5e2824f4cdd42be0eecbabfc672c86f7889710f5ab1e6ad385b47a0';
+const AUTO_START_ARGUMENT = '--monitor-tool-autostart';
 const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
+const loginItemArguments = () => app.isPackaged
+  ? [AUTO_START_ARGUMENT]
+  : [app.getAppPath(), AUTO_START_ARGUMENT];
+
+const syncLaunchAtLogin = (enabled) => {
+  if (process.platform !== 'win32') return;
+  app.setLoginItemSettings({
+    openAtLogin: enabled === true,
+    path: process.execPath,
+    args: loginItemArguments()
+  });
+};
+
+const startedAtLogin = () => config?.behavior?.launchAtLogin === true
+  && process.argv.includes(AUTO_START_ARGUMENT);
 
 const titleBarPalette = (theme = config?.theme ?? 'system') => {
   const light = theme === 'light' || (theme === 'system' && !nativeTheme.shouldUseDarkColors);
@@ -307,6 +324,12 @@ const createOverlayWindow = () => {
 const persistConfig = async (draft) => {
   // 历史记录由独立页面保存，实时监控设置不能覆盖它的开关和保留时长。
   await updateConfig((current) => ({ ...draft, history: current.history }));
+  try {
+    syncLaunchAtLogin(config.behavior.launchAtLogin);
+  } catch (error) {
+    // The setting is retained; Windows can block registry edits through policy.
+    console.warn('Unable to update Windows startup registration:', error.message);
+  }
   hasManualOverlayPosition = Boolean(config.overlay.bounds);
   nativeTheme.themeSource = config.theme;
   applyMainWindowTheme();
@@ -376,6 +399,11 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('com.local.monitor-tool');
   configStore = new ConfigStore(app.getPath('userData'));
   config = await configStore.load();
+  try {
+    syncLaunchAtLogin(config.behavior.launchAtLogin);
+  } catch (error) {
+    console.warn('Unable to synchronize Windows startup registration:', error.message);
+  }
   historyStore = new HistoryStore(app.getPath('userData'), config.history);
   void historyStore.prune();
   appIcon = await loadAppIcon();
@@ -417,7 +445,9 @@ app.whenReady().then(async () => {
   });
 
   registerIpc();
-  createMainWindow();
+  // A login launch stays lightweight: overlay and tray are ready, while the
+  // main panel is created on demand from the tray.
+  if (!startedAtLogin()) createMainWindow();
   createOverlayWindow();
   monitorService.start();
 

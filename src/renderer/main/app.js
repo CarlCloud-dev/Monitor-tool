@@ -354,6 +354,7 @@ function renderSettings() {
   const { overlay } = state.config;
   document.documentElement.dataset.theme = state.config.theme;
   document.querySelector('#overlay-visible').checked = overlay.visible;
+  document.querySelector('#launch-at-login').checked = state.config.behavior?.launchAtLogin === true;
   const minimizeToTray = state.config.behavior?.minimizeToTray !== false;
   document.querySelector('#minimize-to-tray').checked = minimizeToTray;
   const lightweightMode = document.querySelector('#lightweight-mode');
@@ -542,6 +543,7 @@ document.addEventListener('change', async (event) => {
   if (!state.config || state.saving) return;
   const next = cloneConfig();
   if (event.target.id === 'overlay-visible') next.overlay.visible = event.target.checked;
+  else if (event.target.id === 'launch-at-login') next.behavior.launchAtLogin = event.target.checked;
   else if (event.target.id === 'minimize-to-tray') next.behavior.minimizeToTray = event.target.checked;
   else if (event.target.id === 'lightweight-mode') next.behavior.lightweightMode = event.target.checked;
   else if (event.target.id === 'lhm-enabled') next.sensors.lhmEnabled = event.target.checked;

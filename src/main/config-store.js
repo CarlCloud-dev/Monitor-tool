@@ -8,7 +8,7 @@ const DEFAULT_HISTORY_METRIC_IDS = Object.freeze([
 ]);
 
 export const DEFAULT_CONFIG = Object.freeze({
-  version: 15,
+  version: 16,
   theme: 'dark',
   refreshMs: 1000,
   sensors: {
@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     lhmMode: 'standard'
   },
   behavior: {
+    launchAtLogin: false,
     minimizeToTray: true,
     lightweightMode: true
   },
@@ -100,7 +101,7 @@ export function normalizeConfig(value = {}) {
     : [...DEFAULT_CONFIG.history.metricIds];
 
   return {
-    version: 15,
+    version: 16,
     theme: ['dark', 'light', 'system'].includes(value.theme) ? value.theme : DEFAULT_CONFIG.theme,
     refreshMs: Math.round(clamp(value.refreshMs, 500, 5000, DEFAULT_CONFIG.refreshMs)),
     sensors: {
@@ -108,6 +109,7 @@ export function normalizeConfig(value = {}) {
       lhmMode: value.sensors?.lhmMode === 'elevated' ? 'elevated' : 'standard'
     },
     behavior: {
+      launchAtLogin: value.behavior?.launchAtLogin === true,
       minimizeToTray: value.behavior?.minimizeToTray !== false,
       lightweightMode: value.behavior?.lightweightMode !== false
     },

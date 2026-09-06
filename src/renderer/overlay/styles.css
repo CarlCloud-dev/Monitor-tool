@@ -215,10 +215,8 @@ html, body { width: 100%; min-height: 0; margin: 0; background: transparent; }
 
 .side-columns-2 .overlay-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(8px * var(--scale)); }
 
-.overlay-metric.is-warning .overlay-label,
 .overlay-metric strong.is-warning,
 .overlay-metric.is-warning > strong { color: var(--warning); }
-.overlay-metric.is-critical .overlay-label,
 .overlay-metric strong.is-critical,
 .overlay-metric.is-critical > strong { color: var(--danger); }
 
