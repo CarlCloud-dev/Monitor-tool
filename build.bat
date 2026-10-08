@@ -22,7 +22,7 @@ rem Use a mirror for Electron downloads when the default GitHub source is unavai
 if "%ELECTRON_MIRROR%"=="" set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
 if "%ELECTRON_BUILDER_BINARIES_MIRROR%"=="" set "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/"
 
-echo Building Monitor Tool Windows installer...
+echo Building Monitor Tool Windows packages...
 echo Output directory: dist\
 echo.
 call npm.cmd run dist
@@ -30,7 +30,7 @@ set "exitCode=%errorlevel%"
 
 echo.
 if "%exitCode%"=="0" (
-  echo [DONE] Installer created. Check the dist\ directory.
+  echo [DONE] Setup and portable packages created. Check the dist\ directory.
 ) else (
   echo [ERROR] Package build failed with code %exitCode%.
 )

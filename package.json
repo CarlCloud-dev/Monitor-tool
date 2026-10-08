@@ -1,6 +1,6 @@
 {
   "name": "monitor-tool",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "A lightweight, configurable Windows desktop hardware monitor.",
   "author": "Monitor Tool",
@@ -10,7 +10,9 @@
     "start": "electron .",
     "dev": "electron .",
     "pack": "electron-builder --win dir",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win",
+    "dist:installer": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable"
   },
   "dependencies": {
     "systeminformation": "5.33.8"
@@ -23,7 +25,6 @@
     "appId": "com.local.monitor-tool",
     "productName": "Monitor Tool",
     "executableName": "MonitorTool",
-    "artifactName": "MonitorTool-${version}-${arch}.${ext}",
     "asar": true,
     "files": [
       "src/**/*",
@@ -45,16 +46,26 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "src/renderer/assets/logo-mark.ico",
       "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
+      "artifactName": "MonitorTool-${version}-Setup-${arch}.${ext}",
       "shortcutName": "Monitor Tool",
       "uninstallDisplayName": "Monitor Tool",
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "MonitorTool-${version}-Portable-${arch}.${ext}"
     }
   }
 }
