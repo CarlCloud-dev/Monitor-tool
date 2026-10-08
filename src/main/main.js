@@ -107,16 +107,32 @@ const showMainWindow = () => {
   mainWindow.focus();
 };
 
+const updateTrayMenu = () => {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开监控面板', click: showMainWindow },
+    {
+      label: '显示桌面浮窗',
+      type: 'checkbox',
+      checked: config?.overlay?.visible === true,
+      click: () => {
+        void persistConfig({
+          ...config,
+          overlay: { ...config.overlay, visible: !config.overlay.visible }
+        });
+      }
+    },
+    { type: 'separator' },
+    { label: '退出 Monitor Tool', click: () => app.quit() }
+  ]));
+};
+
 const createTray = () => {
   if (tray && !tray.isDestroyed()) return;
   const trayIcon = appIcon.resize({ width: 32, height: 32 });
   tray = new Tray(trayIcon.isEmpty() ? appIcon : trayIcon);
   tray.setToolTip('Monitor Tool · 硬件状态监控');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开监控面板', click: showMainWindow },
-    { type: 'separator' },
-    { label: '退出 Monitor Tool', click: () => app.quit() }
-  ]));
+  updateTrayMenu();
   tray.on('click', showMainWindow);
   tray.on('double-click', showMainWindow);
 };
@@ -367,6 +383,7 @@ const persistConfig = async (draft) => {
   historyStore.setSettings(config.history);
   applyOverlayConfiguration();
   broadcastSettings();
+  updateTrayMenu();
   return config;
 };
 
