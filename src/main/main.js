@@ -70,8 +70,9 @@ const syncLaunchAtLogin = (enabled) => {
   });
 };
 
-const startedAtLogin = () => config?.behavior?.launchAtLogin === true
-  && process.argv.includes(AUTO_START_ARGUMENT);
+// The launch marker describes this run, even if a stale Windows startup entry
+// launched after the user had already disabled startup in their saved settings.
+const startedAtLogin = () => process.argv.includes(AUTO_START_ARGUMENT);
 
 const titleBarPalette = (theme = config?.theme ?? 'system') => {
   const light = theme === 'light' || (theme === 'system' && !nativeTheme.shouldUseDarkColors);
@@ -105,6 +106,11 @@ const showMainWindow = () => {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+};
+
+const syncMonitoringMode = () => {
+  const mainIsActive = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized();
+  monitorService?.setLightweightMode(config?.behavior?.lightweightMode !== false && !mainIsActive);
 };
 
 const updateTrayMenu = () => {
@@ -233,7 +239,10 @@ const resetOverlayShape = (width, height) => {
 
 const placeOverlay = (x, y) => {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  overlayWindow.setPosition(Math.round(x), Math.round(y), false);
+  const nextX = Math.round(x);
+  const nextY = Math.round(y);
+  const [currentX, currentY] = overlayWindow.getPosition();
+  if (nextX !== currentX || nextY !== currentY) overlayWindow.setPosition(nextX, nextY, false);
 };
 
 const sendTo = (window, channel, payload) => {
@@ -310,8 +319,18 @@ const createMainWindow = () => {
   mainWindow.on('closed', () => {
     historyStore?.setCacheActive(false);
     mainWindow = null;
+    syncMonitoringMode();
   });
-  mainWindow.on('hide', () => historyStore?.setCacheActive(false));
+  mainWindow.on('hide', () => {
+    historyStore?.setCacheActive(false);
+    syncMonitoringMode();
+  });
+  mainWindow.on('minimize', () => {
+    historyStore?.setCacheActive(false);
+    syncMonitoringMode();
+  });
+  mainWindow.on('restore', syncMonitoringMode);
+  mainWindow.on('show', syncMonitoringMode);
   mainWindow.loadFile(path.join(rendererPath, 'main', 'index.html'));
 };
 
@@ -378,9 +397,11 @@ const persistConfig = async (draft) => {
   monitorService.setLhmMode(config.sensors.lhmMode);
   monitorService.setNetworkUnit(config.network.unit);
   monitorService.setSelectedMetrics(config.overlay.metrics);
+  monitorService.setOverlayVisible(config.overlay.visible);
   monitorService.setHistorySettings(config.history);
   monitorService.setAlertPolicy(config.alerts);
   historyStore.setSettings(config.history);
+  syncMonitoringMode();
   applyOverlayConfiguration();
   broadcastSettings();
   updateTrayMenu();
@@ -427,8 +448,11 @@ const registerIpc = () => {
       : Math.round(400 * config.overlay.scale);
     const safeWidth = Math.max(1, Math.min(maxWidth, Math.round(requestedWidth || overlayWidthFor(config.overlay))));
     const safeHeight = Math.max(1, Math.min(800, Math.round(requestedHeight || overlayInitialHeightFor(config.overlay))));
-    overlayWindow.setContentSize(safeWidth, safeHeight);
-    resetOverlayShape(safeWidth, safeHeight);
+    const bounds = overlayWindow.getContentBounds();
+    if (bounds.width !== safeWidth || bounds.height !== safeHeight) {
+      overlayWindow.setContentSize(safeWidth, safeHeight);
+      resetOverlayShape(safeWidth, safeHeight);
+    }
     if (!config.overlay.bounds && !hasManualOverlayPosition) {
       const position = defaultOverlayPosition(config.overlay, safeWidth, safeHeight);
       placeOverlay(position.x, position.y);
@@ -462,16 +486,17 @@ app.whenReady().then(async () => {
     alerts: config.alerts,
     lhmDirectory: lhmRuntimeDirectory(),
     selectedMetrics: config.overlay.metrics,
+    overlayVisible: config.overlay.visible,
     historyEnabled: config.history.enabled,
     historyMetrics: config.history.metricIds
   });
   monitorService.setSelectedMetrics(config.overlay.metrics);
   monitorService.setHistorySettings(config.history);
   monitorService.on('snapshot', (snapshot) => {
-    sendTo(mainWindow, 'monitor:update', snapshot);
-    sendTo(overlayWindow, 'monitor:update', snapshot);
+    if (mainWindow?.isVisible() && !mainWindow.isMinimized()) sendTo(mainWindow, 'monitor:update', snapshot);
+    if (overlayWindow?.isVisible()) sendTo(overlayWindow, 'monitor:update', { ...snapshot, history: [] });
     void historyStore.recordSnapshot(snapshot).then((recorded) => {
-      if (recorded && mainWindow?.isVisible()) sendTo(mainWindow, 'history:changed', null);
+      if (recorded && mainWindow?.isVisible() && !mainWindow.isMinimized()) sendTo(mainWindow, 'history:changed', null);
     });
   });
   monitorService.on('error', (error) => {
@@ -490,6 +515,7 @@ app.whenReady().then(async () => {
   // main panel is created on demand from the tray.
   if (!startedAtLogin()) createMainWindow();
   createOverlayWindow();
+  syncMonitoringMode();
   monitorService.start();
 
   app.on('activate', () => {

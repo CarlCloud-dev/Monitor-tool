@@ -24,6 +24,12 @@
 
 轻量模式下，采集服务会按浮窗与历史记录的勾选项建立采集计划；未使用的内存容量、磁盘、网络、频率等指标不会重复调用对应系统接口。Windows 磁盘/网络计数器共用一个按需启动的常驻 PowerShell worker，不使用时会自动退出。若开启温度告警，CPU/GPU 温度会继续后台采样。历史日志按 UTC 日期分片保存，保留周期变化和清理时只处理相关分片，历史页也会缓存未变化的分片，避免长期运行时反复重写或解析一个大文件。
 
+开机自启、主窗口最小化或隐藏时都会按设置进入轻量采样；隐藏的浮窗不再接收逐秒刷新，浮窗不需要的指标仍可由历史记录或温度告警单独采集。Windows 内存和 CPU 型号/频率通过原生接口读取，不再为分页文件等未显示的数据反复启动 PowerShell。CPU 温度、GPU 利用率/温度/显存优先复用增强传感器；温度缺失时的 ACPI 回退也由常驻 worker 查询，并缓存 10 秒（ACPI 是否上报以及对应的温度区域取决于设备）。NVIDIA 回退采样直接查询 `nvidia-smi`，不再逐秒枚举所有显示器。无 NVIDIA 工具时的显卡信息回退每分钟最多刷新一次。
+
+可通过 `powershell -NoProfile -File scripts/profile-runtime.ps1` 只读统计运行中的程序与已捕获子进程的 CPU 占用。`node scripts/profile-sampling.mjs` 可单独观察当前源码的实际采样服务（不写设置或历史，不请求管理员权限）；输出 PID 后，可使用前一个脚本的 `-RootProcessId` 参数单独统计其进程树。此结果不包含 Electron 浮窗渲染开销。
+
+如需检查真实浮窗、托盘和采样的合计开销，可运行 `node_modules\electron\dist\electron.exe scripts\profile-desktop.cjs`（追加 `--panel` 同时打开主面板）。诊断会使用临时数据目录和标准权限传感器，不改正式设置及 Windows 自启项，并在约 40 秒后自动退出。日志直接保存为系统临时目录中的 `MonitorTool-desktop-<PID>.jsonl`，避免启动终端关闭后产生管道写入错误。使用 `profile-runtime.ps1 -RootProcessId <PID>` 统计对应的完整进程树；单独观察 Electron 主进程会漏掉采样子进程。刷新间隔变化会复用现有采集器，退出后的过期异步结果会被丢弃，避免退出途中重新启动采样进程。
+
 ## 启动
 
 ```powershell

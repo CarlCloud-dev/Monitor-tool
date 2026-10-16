@@ -8,6 +8,9 @@ const numberOrNull = (value) => typeof value === 'number' && Number.isFinite(val
 // Only requested counters are queried; a disk failure must not hide network data.
 const POWERSHELL_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+$temperatureAt = [DateTime]::MinValue
+$temperatureValue = $null
+$temperatureError = $null
 while ($true) {
   $line = [Console]::In.ReadLine()
   if ($null -eq $line) { break }
@@ -20,6 +23,8 @@ while ($true) {
       sentBytesPerSecond = $null
       diskError = $null
       networkError = $null
+      cpuTemperature = $null
+      temperatureError = $null
     }
     if ($request.disk) {
       try {
@@ -39,6 +44,23 @@ while ($true) {
           if ($null -ne $sent) { $result.sentBytesPerSecond = [Math]::Max(0, [double]$sent) }
         }
       } catch { $result.networkError = $_.Exception.Message }
+    }
+    if ($request.temperature) {
+      if (([DateTime]::UtcNow - $temperatureAt).TotalSeconds -ge 10) {
+        $temperatureAt = [DateTime]::UtcNow
+        $temperatureValue = $null
+        $temperatureError = $null
+        try {
+          $zones = @(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop)
+          $values = @($zones | ForEach-Object {
+            $value = ([double]$_.CurrentTemperature - 2732) / 10
+            if ($value -gt 0) { $value }
+          })
+          if ($values.Count -gt 0) { $temperatureValue = ($values | Measure-Object -Average).Average }
+        } catch { $temperatureError = $_.Exception.Message }
+      }
+      $result.cpuTemperature = $temperatureValue
+      $result.temperatureError = $temperatureError
     }
     [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject $result))
   } catch {
@@ -150,27 +172,28 @@ export class WindowsPerfSampler {
     this.failureCount = 0;
     this.retryAt = 0;
     this.hasSample = true;
-    this.lastError = [result.diskError, result.networkError].filter(Boolean).join('；') || null;
+    this.lastError = [result.diskError, result.networkError, result.temperatureError].filter(Boolean).join('；') || null;
     const disk = numberOrNull(result.diskPercent);
     const received = numberOrNull(result.receivedBytesPerSecond);
     const sent = numberOrNull(result.sentBytesPerSecond);
     pending.resolve({
       diskPercent: pending.disk && disk !== null ? Math.max(0, Math.min(100, disk)) : null,
       receivedBytesPerSecond: pending.network && received !== null ? Math.max(0, received) : null,
-      sentBytesPerSecond: pending.network && sent !== null ? Math.max(0, sent) : null
+      sentBytesPerSecond: pending.network && sent !== null ? Math.max(0, sent) : null,
+      cpuTemperature: pending.temperature ? numberOrNull(result.cpuTemperature) : null
     });
   }
 
-  async sample({ disk = true, network = true } = {}) {
-    if (!disk && !network) {
+  async sample({ disk = true, network = true, temperature = false } = {}) {
+    if (!disk && !network && !temperature) {
       this.stop();
       return null;
     }
     if (this.pending) {
       const pending = this.pending;
-      if ((!disk || pending.disk) && (!network || pending.network)) return pending.promise;
+      if ((!disk || pending.disk) && (!network || pending.network) && (!temperature || pending.temperature)) return pending.promise;
       await pending.promise;
-      return this.sample({ disk, network });
+      return this.sample({ disk, network, temperature });
     }
     if (!this.start()) return null;
     const child = this.process;
@@ -183,9 +206,9 @@ export class WindowsPerfSampler {
     const timeout = setTimeout(() => {
       if (this.pending?.promise === promise) this.handleExit(child, 'Windows 性能计数器读取超时。');
     }, this.hasSample ? SAMPLE_TIMEOUT_MS : STARTUP_TIMEOUT_MS);
-    this.pending = { promise, resolve: resolveSample, timeout, disk, network };
+    this.pending = { promise, resolve: resolveSample, timeout, disk, network, temperature };
     try {
-      child.stdin.write(JSON.stringify({ disk, network }) + '\n', (error) => {
+      child.stdin.write(JSON.stringify({ disk, network, temperature }) + '\n', (error) => {
         if (error) this.handleExit(child, error.message);
       });
     } catch (error) {

@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import si from 'systeminformation';
+import { GraphicsSampler } from './graphics-sampler.js';
 import { LhmBridge } from './lhm-bridge.js';
 import { WindowsPerfSampler } from './windows-perf-sampler.js';
 
@@ -91,7 +93,10 @@ const readLhmSensors = (sensors) => {
     cpuPower: selectSensor(sensors, isCpuPowerSensor, [/package/, /cpu/]),
     cpuFan: selectSensor(sensors, isCpuFanSensor, [/cpu/, /fan/], { zeroIsValid: true }),
     gpuTemp: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Temperature', [/gpu core/, /core/]),
-    gpuLoad: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Load', [/gpu core/, /core/]),
+    gpuLoad: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Load' && /^(gpu )?core$|^d3d 3d$/i.test(sensor.name ?? ''), [/gpu core/, /core/], { zeroIsValid: true }),
+    gpuMemoryLoad: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Load' && /^(gpu )?memory$/i.test(sensor.name ?? ''), [], { zeroIsValid: true }),
+    gpuMemoryUsed: selectSensor(gpuSensors, (sensor) => ['SmallData', 'Data'].includes(sensor.sensorType) && /memory used/i.test(sensor.name ?? ''), [], { zeroIsValid: true }),
+    gpuMemoryTotal: selectSensor(gpuSensors, (sensor) => ['SmallData', 'Data'].includes(sensor.sensorType) && /memory total/i.test(sensor.name ?? '')),
     gpuPower: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Power', [/gpu package/, /board power/, /package/]),
     gpuFan: selectSensor(gpuSensors, (sensor) => sensor.sensorType === 'Fan', [/gpu fan 1/, /gpu/, /fan/], { zeroIsValid: true }),
     boardTemp: selectSensor(sensors, isBoardSensor, [/system/, /motherboard/, /chipset|pch/, /vrm/, /t_sensor/])
@@ -135,7 +140,24 @@ const enhancedSensorDetail = (summary, status, mode, runtime) => {
 const HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp'];
 const HISTORY_LIMIT = 120;
 const DEFAULT_HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp', 'board.temp', 'disk.load', 'network.down', 'network.up'];
-const ENHANCED_METRICS = ['cpu.temp', 'cpu.power', 'cpu.fan', 'gpu.load', 'gpu.temp', 'gpu.power', 'gpu.fan', 'board.temp'];
+const ENHANCED_METRICS = ['cpu.temp', 'cpu.power', 'cpu.fan', 'gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.power', 'gpu.fan', 'board.temp'];
+
+const memorySnapshot = () => {
+  const total = os.totalmem();
+  const free = os.freemem();
+  return { total, free, available: free, used: total - free };
+};
+
+const cpuSnapshot = () => {
+  const cores = os.cpus();
+  const speed = cores.reduce((sum, core) => sum + core.speed, 0) / (cores.length || 1) / 1000;
+  return { brand: cores[0]?.model ?? 'CPU', speed: speed || null };
+};
+
+const gpuMemoryMB = (sensor) => {
+  const value = sensorValue(sensor, { zeroIsValid: true });
+  return value === null ? null : value * (sensor.sensorType === 'Data' ? 1024 : 1);
+};
 
 const historyMetricSet = (metricIds) => {
   const selected = new Set(Array.isArray(metricIds) ? metricIds : []);
@@ -143,11 +165,12 @@ const historyMetricSet = (metricIds) => {
 };
 
 export class MonitorService extends EventEmitter {
-  constructor({ refreshMs = 1000, lhmDirectory, lhmEnabled = false, lhmMode = 'standard', networkUnit = 'MB/s', alerts = {}, selectedMetrics = [], historyEnabled = true, historyMetrics = DEFAULT_HISTORY_METRICS } = {}) {
+  constructor({ refreshMs = 1000, lhmDirectory, lhmEnabled = false, lhmMode = 'standard', networkUnit = 'MB/s', alerts = {}, selectedMetrics = [], overlayVisible = true, historyEnabled = true, historyMetrics = DEFAULT_HISTORY_METRICS } = {}) {
     super();
     this.refreshMs = refreshMs;
     this.timer = null;
     this.inFlight = false;
+    this.samplingGeneration = 0;
     this.snapshot = this.createEmptySnapshot();
     this.cache = new Map();
     this.lhmEnabled = lhmEnabled;
@@ -155,12 +178,14 @@ export class MonitorService extends EventEmitter {
     this.lhmMode = lhmMode;
     this.networkUnit = networkUnit === 'KB/s' ? 'KB/s' : 'MB/s';
     this.selectedMetricIds = new Set(Array.isArray(selectedMetrics) ? selectedMetrics : []);
+    this.overlayVisible = overlayVisible !== false;
     this.historyEnabled = historyEnabled !== false;
     this.historyMetricIds = historyMetricSet(historyMetrics);
     this.lightweightMode = false;
     this.lhm = this.createLhmBridge();
     this.history = [];
     this.windowsPerf = new WindowsPerfSampler();
+    this.graphics = new GraphicsSampler();
     this.lastAlertAt = new Map();
     this.setAlertPolicy(alerts);
   }
@@ -187,8 +212,10 @@ export class MonitorService extends EventEmitter {
   }
 
   stop() {
+    this.samplingGeneration++;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.cache.clear();
     this.lhm.stop();
     this.windowsPerf.stop();
   }
@@ -197,8 +224,9 @@ export class MonitorService extends EventEmitter {
     if (this.refreshMs === refreshMs) return;
     this.refreshMs = refreshMs;
     if (!this.timer) return;
-    this.stop();
-    this.start();
+    // Changing the cadence must not restart workers or request elevation again.
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.sample(), this.refreshMs);
   }
 
   setLhmEnabled(enabled) {
@@ -226,14 +254,26 @@ export class MonitorService extends EventEmitter {
   }
 
   setSelectedMetrics(metricIds = []) {
-    this.selectedMetricIds = new Set(Array.isArray(metricIds) ? metricIds : []);
+    const next = new Set(Array.isArray(metricIds) ? metricIds : []);
+    if (next.size === this.selectedMetricIds.size && [...next].every((id) => this.selectedMetricIds.has(id))) return;
+    this.selectedMetricIds = next;
     this.cache.delete('lhm-sensors');
     if (this.lightweightMode && !this.inFlight) void this.sample();
   }
 
+  setOverlayVisible(visible) {
+    if (this.overlayVisible === (visible !== false)) return;
+    this.overlayVisible = visible !== false;
+    if (this.timer && this.lightweightMode && !this.inFlight) void this.sample();
+  }
+
   setHistorySettings(settings = {}) {
-    this.historyEnabled = settings.enabled !== false;
-    this.historyMetricIds = historyMetricSet(settings.metricIds);
+    const enabled = settings.enabled !== false;
+    const metricIds = historyMetricSet(settings.metricIds);
+    if (enabled === this.historyEnabled && metricIds.size === this.historyMetricIds.size
+      && [...metricIds].every((id) => this.historyMetricIds.has(id))) return;
+    this.historyEnabled = enabled;
+    this.historyMetricIds = metricIds;
     this.cache.delete('lhm-sensors');
     if (this.lightweightMode && !this.inFlight) void this.sample();
   }
@@ -244,7 +284,7 @@ export class MonitorService extends EventEmitter {
     this.lightweightMode = next;
     // 轻量模式可能刚刚释放了 LHM 桥接，恢复主界面时必须立即重新连接。
     this.cache.delete('lhm-sensors');
-    if (!this.inFlight) void this.sample();
+    if (this.timer && !this.inFlight) void this.sample();
   }
 
   restartLhmBridge() {
@@ -299,45 +339,62 @@ export class MonitorService extends EventEmitter {
   async cached(key, ttlMs, loader) {
     const current = this.cache.get(key);
     if (current && Date.now() - current.at < ttlMs) return current.value;
+    const generation = this.samplingGeneration;
     try {
       const value = await loader();
-      this.cache.set(key, { at: Date.now(), value });
+      if (generation === this.samplingGeneration) this.cache.set(key, { at: Date.now(), value });
       return value;
     } catch {
-      return current?.value ?? null;
+      const value = current?.value ?? null;
+      if (generation === this.samplingGeneration) this.cache.set(key, { at: Date.now(), value });
+      return value;
     }
   }
 
   async sample() {
     if (this.inFlight) return;
     this.inFlight = true;
+    const generation = this.samplingGeneration;
 
     try {
       const alertMetrics = this.alerts.enabled ? ['cpu.temp', 'gpu.temp'] : [];
       const shouldSample = (id) => !this.lightweightMode
-        || this.selectedMetricIds.has(id)
+        || (this.overlayVisible && this.selectedMetricIds.has(id))
         || (this.historyEnabled && this.historyMetricIds.has(id))
         || alertMetrics.includes(id);
       const needsMemory = shouldSample('memory.load') || shouldSample('memory.used');
-      const needsGraphics = ['gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.power', 'gpu.fan'].some(shouldSample);
       const needsDisk = shouldSample('disk.load');
       const needsNetwork = shouldSample('network.down') || shouldSample('network.up');
       const needsEnhanced = this.lhmEnabled && ENHANCED_METRICS.some(shouldSample);
       if (!needsEnhanced && this.lhm.getStatus().status !== 'disabled') this.lhm.stop();
-      const needsWindowsPerf = needsDisk || needsNetwork;
-      if (!needsWindowsPerf) this.windowsPerf.stop();
-      const [load, memory, cpu, graphics, temperature, windowsPerf, lhmSensors] = await Promise.all([
+      const [load, memory, cpu, lhmSensors] = await Promise.all([
         shouldSample('cpu.load') ? si.currentLoad() : null,
-        needsMemory ? si.mem() : null,
-        shouldSample('cpu.speed') || !this.lightweightMode ? this.cached('cpu', 60_000, () => si.cpu()) : null,
-        needsGraphics ? this.cached('graphics', 2_000, () => si.graphics()) : null,
-        shouldSample('cpu.temp') || this.alerts.enabled ? this.cached('cpu-temperature', 5_000, () => si.cpuTemperature()) : null,
-        needsWindowsPerf ? this.cached(`windows-perf:${needsDisk}:${needsNetwork}`, 900, () => this.windowsPerf.sample({ disk: needsDisk, network: needsNetwork })) : null,
+        needsMemory ? (process.platform === 'win32' ? memorySnapshot() : si.mem()) : null,
+        shouldSample('cpu.speed') || !this.lightweightMode ? (process.platform === 'win32' ? cpuSnapshot() : this.cached('cpu', 60_000, () => si.cpu())) : null,
         needsEnhanced ? this.cached('lhm-sensors', 2_000, () => this.lhm.sample()) : null
       ]);
+      if (generation !== this.samplingGeneration) return;
 
       const enhancedSensorList = lhmSensors ?? [];
       const enhanced = readLhmSensors(enhancedSensorList);
+      const enhancedMemoryTotal = gpuMemoryMB(enhanced.gpuMemoryTotal);
+      const enhancedMemoryUsed = gpuMemoryMB(enhanced.gpuMemoryUsed);
+      const enhancedVramLoad = sensorValue(enhanced.gpuMemoryLoad, { zeroIsValid: true })
+        ?? (enhancedMemoryTotal && enhancedMemoryUsed !== null ? enhancedMemoryUsed / enhancedMemoryTotal * 100 : null);
+      const needsGraphicsFallback = (shouldSample('gpu.load') && !enhanced.gpuLoad)
+        || (shouldSample('gpu.temp') && !enhanced.gpuTemp)
+        || (shouldSample('gpu.vram') && enhancedVramLoad === null);
+      const needsTemperatureFallback = shouldSample('cpu.temp') && !enhanced.cpuTemp;
+      const needsWindowsTemperature = process.platform === 'win32' && needsTemperatureFallback;
+      const needsWindowsPerf = needsDisk || needsNetwork || needsWindowsTemperature;
+      if (!needsWindowsPerf) this.windowsPerf.stop();
+      const [graphics, temperature, windowsPerf] = await Promise.all([
+        needsGraphicsFallback ? this.cached('graphics', 2_000, () => this.graphics.sample()) : null,
+        needsTemperatureFallback && process.platform !== 'win32' ? this.cached('cpu-temperature', 10_000, () => si.cpuTemperature()) : null,
+        needsWindowsPerf ? this.cached(`windows-perf:${needsDisk}:${needsNetwork}:${needsWindowsTemperature}`, 900,
+          () => this.windowsPerf.sample({ disk: needsDisk, network: needsNetwork, temperature: needsWindowsTemperature })) : null
+      ]);
+      if (generation !== this.samplingGeneration) return;
       const enhancedSummary = summarizeLhmSensors(enhancedSensorList);
       const enhancedBridgeStatus = this.lhm.getStatus();
       const pawnIoRequired = this.lhmEnabled
@@ -346,14 +403,14 @@ export class MonitorService extends EventEmitter {
         && enhancedBridgeStatus.pawnIoInstalled === false;
       const controller = graphics?.controllers?.find((candidate) => !/(virtual|remote|basic display|mirror)/i.test(candidate.model ?? '')) ?? null;
       const cpuLoad = numberOrNull(load?.currentLoad);
-      const cpuTemp = sensorValue(enhanced.cpuTemp) ?? nonZeroNumberOrNull(temperature?.main);
+      const cpuTemp = sensorValue(enhanced.cpuTemp) ?? nonZeroNumberOrNull(windowsPerf?.cpuTemperature ?? temperature?.main);
       const cpuSpeed = numberOrNull(cpu?.speed);
       const memoryLoad = memory?.total ? (memory.used / memory.total) * 100 : null;
-      const gpuLoad = sensorValue(enhanced.gpuLoad) ?? numberOrNull(controller?.utilizationGpu);
+      const gpuLoad = sensorValue(enhanced.gpuLoad, { zeroIsValid: true }) ?? numberOrNull(controller?.utilizationGpu);
       const gpuTemp = sensorValue(enhanced.gpuTemp) ?? nonZeroNumberOrNull(controller?.temperatureGpu);
-      const gpuMemoryTotal = numberOrNull(controller?.memoryTotal ?? controller?.vram);
-      const gpuMemoryUsed = numberOrNull(controller?.memoryUsed ?? controller?.vramDynamic);
-      const gpuVramLoad = gpuMemoryTotal && gpuMemoryUsed !== null ? (gpuMemoryUsed / gpuMemoryTotal) * 100 : null;
+      const gpuMemoryTotal = enhancedMemoryTotal ?? numberOrNull(controller?.memoryTotal ?? controller?.vram);
+      const gpuMemoryUsed = enhancedMemoryUsed ?? numberOrNull(controller?.memoryUsed ?? controller?.vramDynamic);
+      const gpuVramLoad = enhancedVramLoad ?? (gpuMemoryTotal && gpuMemoryUsed !== null ? (gpuMemoryUsed / gpuMemoryTotal) * 100 : null);
       const diskLoad = numberOrNull(windowsPerf?.diskPercent);
       const totalRx = numberOrNull(windowsPerf?.receivedBytesPerSecond);
       const totalTx = numberOrNull(windowsPerf?.sentBytesPerSecond);
@@ -373,7 +430,7 @@ export class MonitorService extends EventEmitter {
         'cpu.fan': metric('cpu.fan', 'CPU 风扇', sensorValue(enhanced.cpuFan, { zeroIsValid: true }), 'RPM', sensorDetail(enhanced.cpuFan, enhancedFallback, { zeroIsValid: true }), 'cpu', 'activity'),
         'memory.load': metric('memory.load', '内存利用率', memoryLoad, '%', `${formatBytes(memory?.used)} / ${formatBytes(memory?.total)}`, 'memory', 'memory'),
         'memory.used': metric('memory.used', '内存已用', memory?.used ? memory.used / 1024 ** 3 : null, 'GB', `可用 ${formatBytes(memory?.available)}`, 'memory', 'memory'),
-        'gpu.load': metric('gpu.load', 'GPU 利用率', gpuLoad, '%', sensorDetail(enhanced.gpuLoad, controller?.model ?? '显卡传感器'), 'gpu', 'gpu'),
+        'gpu.load': metric('gpu.load', 'GPU 利用率', gpuLoad, '%', sensorDetail(enhanced.gpuLoad, controller?.model ?? '显卡传感器', { zeroIsValid: true }), 'gpu', 'gpu'),
         'gpu.temp': metric('gpu.temp', 'GPU 温度', gpuTemp, '°C', sensorDetail(enhanced.gpuTemp, gpuTemp === null ? '此驱动暂未提供温度' : controller?.model ?? '显卡温度'), 'gpu', 'thermometer'),
         'gpu.vram': metric('gpu.vram', '显存利用率', gpuVramLoad, '%', gpuMemoryTotal ? `${Math.round(gpuMemoryUsed ?? 0)} / ${Math.round(gpuMemoryTotal)} MB` : '显存数据不可用', 'gpu', 'gpu'),
         'gpu.power': metric('gpu.power', 'GPU 功耗', sensorValue(enhanced.gpuPower), 'W', sensorDetail(enhanced.gpuPower, enhancedFallback), 'gpu', 'activity'),

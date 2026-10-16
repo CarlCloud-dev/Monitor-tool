@@ -6,6 +6,7 @@ let renderedLayoutIsMinimal = false;
 let metricNodes = new Map();
 let groupNodes = new Map();
 let resizeFramePending = false;
+let renderedAppearanceKey = '';
 
 const iconFor = (icon) => ({ cpu: '◌', thermometer: '∿', activity: '⌁', memory: '▦', gpu: '◇', disk: '◫', download: '↓', upload: '↑' }[icon] ?? '•');
 const groupLabel = (group) => ({ cpu: 'CPU', memory: '内存', gpu: 'GPU', board: '主板', storage: '磁盘', network: '网络' }[group] ?? '状态');
@@ -135,7 +136,7 @@ const updateMetricNodes = (selectedMetrics) => {
       node.textContent = value;
       valueChanged = true;
     }
-    node.title = metric.label;
+    if (node.title !== metric.label) node.title = metric.label;
     const tone = metricToneClass(metric);
     toggleToneClasses(node, tone);
     if (!renderedLayoutIsMinimal) {
@@ -188,19 +189,24 @@ function render() {
   const modeClass = overlay.mode === 'side'
     ? 'mode-side side-' + overlay.sidePosition + ' side-columns-' + overlay.sideColumns
     : 'mode-top top-' + overlay.topStyle;
-  root.className = modeClass;
-  root.style.setProperty('--scale', overlay.scale);
-  root.style.setProperty('--corner-radius', String(overlay.cornerRadius * overlay.scale) + 'px');
-  root.style.setProperty('--corner-content-inset', String(Math.ceil(overlay.cornerRadius * overlay.scale * 0.6)) + 'px');
-  root.style.setProperty('--top-columns', String(Math.min(Math.max(selectedMetrics.length, 1), 12)));
-  root.dataset.theme = state.config.theme;
-  root.dataset.health = state.snapshot.health;
+  const appearanceKey = [modeClass, overlay.scale, overlay.cornerRadius, selectedMetrics.length, state.config.theme].join('|');
+  const appearanceChanged = renderedAppearanceKey !== appearanceKey;
+  if (appearanceChanged) {
+    root.className = modeClass;
+    root.style.setProperty('--scale', overlay.scale);
+    root.style.setProperty('--corner-radius', String(overlay.cornerRadius * overlay.scale) + 'px');
+    root.style.setProperty('--corner-content-inset', String(Math.ceil(overlay.cornerRadius * overlay.scale * 0.6)) + 'px');
+    root.style.setProperty('--top-columns', String(Math.min(Math.max(selectedMetrics.length, 1), 12)));
+    root.dataset.theme = state.config.theme;
+    renderedAppearanceKey = appearanceKey;
+  }
+  if (root.dataset.health !== state.snapshot.health) root.dataset.health = state.snapshot.health;
   const layoutChanged = renderedLayoutKey !== layoutKeyFor(overlay);
   if (layoutChanged) rebuildLayout(root, overlay, selectedMetrics);
   const valueChanged = layoutChanged ? false : updateMetricNodes(selectedMetrics);
   const shell = root.querySelector('.overlay-shell');
   shell?.classList.toggle('is-locked', overlay.locked);
-  scheduleResize(root, overlay, layoutChanged || valueChanged || !lastReportedSize);
+  scheduleResize(root, overlay, appearanceChanged || layoutChanged || valueChanged || !lastReportedSize);
 }
 
 async function boot() {
