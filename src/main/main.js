@@ -41,15 +41,17 @@ const updateConfig = (makeDraft) => {
 const PAWNIO_SETUP_SHA256 = 'a3a46226c5e2824f4cdd42be0eecbabfc672c86f7889710f5ab1e6ad385b47a0';
 const AUTO_START_ARGUMENT = '--monitor-tool-autostart';
 const PROJECT_REPOSITORY_URL = 'https://github.com/CarlCloud-dev/Monitor-tool';
+const APPROVED_EXTERNAL_LINKS = new Set([
+  PROJECT_REPOSITORY_URL,
+  'https://www.carl.top',
+  'https://www.carl.top/tip'
+]);
 const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
-const openProjectRepository = (value) => {
+const openApprovedExternalLink = (value) => {
   try {
     const url = new URL(value);
-    const isProjectRepository = url.protocol === 'https:'
-      && url.hostname === 'github.com'
-      && url.pathname.replace(/\/+$/, '') === '/CarlCloud-dev/Monitor-tool';
-    if (!isProjectRepository) return false;
+    if (!APPROVED_EXTERNAL_LINKS.has(url.href.replace(/\/+$/, ''))) return false;
     void shell.openExternal(url.href).catch((error) => console.warn('Unable to open project link:', error.message));
     return true;
   } catch {
@@ -295,13 +297,13 @@ const createMainWindow = () => {
     console.error(`Main renderer stopped: ${details.reason}`);
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    openProjectRepository(url);
+    openApprovedExternalLink(url);
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url.startsWith('file:')) return;
     event.preventDefault();
-    openProjectRepository(url);
+    openApprovedExternalLink(url);
   });
   mainWindow.on('close', (event) => {
     historyStore?.setCacheActive(false);
