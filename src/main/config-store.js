@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { HISTORY_METRIC_IDS } from './history-store.js';
+import { DEFAULT_HISTORY_RETENTION_HOURS, normalizeHistoryRetention } from '../shared/history-options.js';
 
 const DEFAULT_HISTORY_METRIC_IDS = Object.freeze([
   'cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp',
@@ -8,7 +9,7 @@ const DEFAULT_HISTORY_METRIC_IDS = Object.freeze([
 ]);
 
 export const DEFAULT_CONFIG = Object.freeze({
-  version: 16,
+  version: 20,
   theme: 'dark',
   refreshMs: 1000,
   sensors: {
@@ -20,12 +21,15 @@ export const DEFAULT_CONFIG = Object.freeze({
     minimizeToTray: true,
     lightweightMode: true
   },
+  updates: {
+    checkOnStartup: true
+  },
   network: {
     unit: 'MB/s'
   },
   history: {
     enabled: true,
-    retentionHours: 24,
+    retentionHours: DEFAULT_HISTORY_RETENTION_HOURS,
     metricIds: DEFAULT_HISTORY_METRIC_IDS
   },
   alerts: {
@@ -34,6 +38,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     gpuTemperature: 83,
     cooldownSeconds: 300
   },
+  taskbar: { visible: false, position: 'right' },
   overlay: {
     visible: true,
     alwaysOnTop: true,
@@ -41,6 +46,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     opacity: 0.94,
     scale: 1,
     cornerRadius: 0,
+    backgroundStyle: 'panel',
     mode: 'top',
     topStyle: 'minimal',
     sidePosition: 'right',
@@ -58,9 +64,11 @@ const OVERLAY_METRICS = new Set([
   'cpu.fan',
   'memory.load',
   'memory.used',
+  'memory.temp',
   'gpu.load',
   'gpu.temp',
   'gpu.vram',
+  'gpu.vram.used',
   'gpu.power',
   'gpu.fan',
   'board.temp',
@@ -101,7 +109,7 @@ export function normalizeConfig(value = {}) {
     : [...DEFAULT_CONFIG.history.metricIds];
 
   return {
-    version: 16,
+    version: 20,
     theme: ['dark', 'light', 'system'].includes(value.theme) ? value.theme : DEFAULT_CONFIG.theme,
     refreshMs: Math.round(clamp(value.refreshMs, 500, 5000, DEFAULT_CONFIG.refreshMs)),
     sensors: {
@@ -113,14 +121,15 @@ export function normalizeConfig(value = {}) {
       minimizeToTray: value.behavior?.minimizeToTray !== false,
       lightweightMode: value.behavior?.lightweightMode !== false
     },
+    updates: {
+      checkOnStartup: value.updates?.checkOnStartup !== false
+    },
     network: {
       unit: value.network?.unit === 'KB/s' ? 'KB/s' : 'MB/s'
     },
     history: {
       enabled: value.history?.enabled !== false,
-      retentionHours: [1, 6, 24, 72, 168, 720].includes(Number(value.history?.retentionHours))
-        ? Number(value.history.retentionHours)
-        : DEFAULT_CONFIG.history.retentionHours,
+      retentionHours: normalizeHistoryRetention(value.history?.retentionHours),
       metricIds: historyMetricIds.length ? historyMetricIds : [...DEFAULT_CONFIG.history.metricIds]
     },
     alerts: {
@@ -129,13 +138,18 @@ export function normalizeConfig(value = {}) {
       gpuTemperature: Math.round(clamp(value.alerts?.gpuTemperature, 50, 105, DEFAULT_CONFIG.alerts.gpuTemperature)),
       cooldownSeconds: Math.round(clamp(value.alerts?.cooldownSeconds, 60, 3600, DEFAULT_CONFIG.alerts.cooldownSeconds))
     },
+    taskbar: {
+      visible: value.taskbar?.visible === true,
+      position: ['left', 'center', 'right'].includes(value.taskbar?.position) ? value.taskbar.position : 'right'
+    },
     overlay: {
       visible: overlay.visible !== false,
       alwaysOnTop: overlay.alwaysOnTop !== false,
       locked: overlay.locked === true,
-      opacity: clamp(overlay.opacity, 0.55, 1, DEFAULT_CONFIG.overlay.opacity),
+      opacity: clamp(overlay.opacity, 0, 1, DEFAULT_CONFIG.overlay.opacity),
       scale: clamp(overlay.scale, 0.8, 1.25, DEFAULT_CONFIG.overlay.scale),
       cornerRadius: cornerRadiusFor(overlay.cornerRadius),
+      backgroundStyle: overlay.backgroundStyle === 'transparent' ? 'transparent' : 'panel',
       mode: ['top', 'side'].includes(overlay.mode) ? overlay.mode : DEFAULT_CONFIG.overlay.mode,
       topStyle: ['minimal', 'detailed'].includes(overlay.topStyle)
         ? overlay.topStyle

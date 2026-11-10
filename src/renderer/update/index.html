@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN" data-update-window data-theme="system">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+    <title>Monitor Tool · 应用更新</title>
+    <link rel="stylesheet" href="../shared/update-ui.css" />
+    <link rel="stylesheet" href="../shared/scrollbars.css" />
+  </head>
+  <body class="update-window-page">
+    <main class="update-window-shell update-surface" id="update-dialog" data-update-variant="dialog">
+      <header class="update-window-header">
+        <span class="update-window-brand"><img src="../assets/logo-mark.svg" alt="" />Monitor Tool · 应用更新</span>
+        <button class="update-window-close" type="button" data-update-action="close" aria-label="关闭更新窗口">×</button>
+      </header>
+      <section class="update-dialog-body">
+        <span class="update-dialog-kicker">MONITOR TOOL UPDATE</span>
+        <h1 data-update-title>有新版本可用</h1>
+        <p class="update-status" data-update-message role="status">正在读取更新信息…</p>
+        <div class="update-version-route"><span data-update-current>当前版本</span><i aria-hidden="true">→</i><strong data-update-latest>最新版本</strong></div>
+        <div class="update-release-meta" data-update-size>Windows Setup 安装包</div>
+        <div class="update-notes" data-update-notes>正在读取更新说明…</div>
+      </section>
+      <footer class="update-dialog-footer">
+        <div class="update-progress-wrap" data-update-progress-wrap hidden><progress max="100" value="0" aria-label="更新下载进度"></progress><span data-update-progress-label></span></div>
+        <p class="update-fine-print" data-update-guidance></p>
+        <div class="update-actions">
+          <button class="update-button" type="button" data-update-action="close" data-update-dismiss>暂不更新</button>
+          <button class="update-button" type="button" data-update-action="manual">手动下载</button>
+          <button class="update-button update-button-primary" type="button" data-update-action="primary" data-update-primary>下载并安装</button>
+        </div>
+        <p class="update-fine-print" data-update-source>更新来源：download.carl.top</p>
+      </footer>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

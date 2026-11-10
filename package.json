@@ -1,6 +1,6 @@
 {
   "name": "monitor-tool",
-  "version": "0.1.8",
+  "version": "1.0.6",
   "private": true,
   "description": "A lightweight, configurable Windows desktop hardware monitor.",
   "author": "Monitor Tool",
@@ -9,6 +9,12 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "prestart": "node scripts/build-taskbar-probe.cjs",
+    "predev": "node scripts/build-taskbar-probe.cjs",
+    "prepack": "node scripts/build-taskbar-probe.cjs",
+    "predist": "node scripts/build-taskbar-probe.cjs",
+    "predist:installer": "node scripts/build-taskbar-probe.cjs",
+    "predist:portable": "node scripts/build-taskbar-probe.cjs",
     "pack": "electron-builder --win dir",
     "dist": "electron-builder --win",
     "dist:installer": "electron-builder --win nsis",
@@ -31,6 +37,20 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/taskbar/pack",
+        "to": "taskbar",
+        "filter": [
+          "TaskbarProbe.exe"
+        ]
+      },
+      {
+        "from": ".",
+        "to": ".",
+        "filter": [
+          "update-channel.local.json"
+        ]
+      },
       {
         "from": "resources/lhm",
         "to": "lhm",

@@ -1,13 +1,16 @@
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
-import { buildMetricSeries, finiteOrNull } from '../shared/history-series.js';
+import { createMetricSeriesAccumulator, finiteOrNull } from '../shared/history-series.js';
+import { DEFAULT_HISTORY_RETENTION_HOURS, normalizeHistoryRetention, normalizeHistoryRange } from '../shared/history-options.js';
+export { HISTORY_RETENTION_OPTIONS } from '../shared/history-options.js';
 
 export const HISTORY_INTERVAL_SECONDS = 10;
-export const HISTORY_RETENTION_OPTIONS = [1, 6, 24, 72, 168, 720];
 export const HISTORY_METRIC_IDS = [
   'cpu.load', 'cpu.temp', 'cpu.power', 'cpu.fan',
-  'memory.load',
+  'memory.load', 'memory.temp',
   'gpu.load', 'gpu.temp', 'gpu.power', 'gpu.fan',
   'board.temp', 'disk.load', 'network.down', 'network.up'
 ];
@@ -23,10 +26,7 @@ const MAX_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_CACHE_FILES = 4;
 const CACHE_IDLE_MS = 60_000;
 
-const retentionFor = (value) => {
-  const numeric = Number(value);
-  return HISTORY_RETENTION_OPTIONS.includes(numeric) ? numeric : 24;
-};
+const retentionFor = normalizeHistoryRetention;
 
 const metricIdsFor = (value) => {
   if (!Array.isArray(value)) return [...HISTORY_METRIC_IDS];
@@ -55,7 +55,7 @@ const parseRecords = (contents) => contents
   .filter((record) => Number.isFinite(record?.capturedAt) && record.values && typeof record.values === 'object');
 
 export class HistoryStore {
-  constructor(userDataPath, { enabled = true, retentionHours = 24, metricIds } = {}) {
+  constructor(userDataPath, { enabled = true, retentionHours = DEFAULT_HISTORY_RETENTION_HOURS, metricIds } = {}) {
     this.filePath = path.join(userDataPath, LEGACY_FILE_NAME);
     this.shardDirectory = path.join(userDataPath, SHARD_DIRECTORY_NAME);
     this.enabled = enabled !== false;
@@ -69,6 +69,8 @@ export class HistoryStore {
     this.cacheEpoch = 0;
     this.cacheTimer = null;
     this.viewPromise = null;
+    this.viewKey = '';
+    this.viewGeneration = 0;
   }
 
   releaseCache() {
@@ -77,6 +79,8 @@ export class HistoryStore {
     this.cacheEpoch += 1;
     this.fileCache.clear();
     this.viewPromise = null;
+    this.viewKey = '';
+    this.viewGeneration++;
   }
 
   setCacheActive(active) {
@@ -150,80 +154,105 @@ export class HistoryStore {
     }
   }
 
-  async readAll() {
-    const epoch = this.cacheEpoch;
-    await this.writeQueue.catch(() => {});
-    const cutoff = Date.now() - this.retentionHours * 60 * 60 * 1000;
-    let shardNames = [];
-    try { shardNames = await readdir(this.shardDirectory); } catch { /* shard directory may not exist */ }
-    const firstDay = dayStartFor(cutoff);
-    const lastDay = dayStartFor(Date.now());
-    const shardPaths = shardNames
-      .filter((name) => {
-        const timestamp = shardTimestampFor(name);
-        return timestamp !== null && timestamp >= firstDay && timestamp <= lastDay;
-      })
-      .map((name) => path.join(this.shardDirectory, name));
-    const sourcePaths = [this.filePath, ...shardPaths];
-    const sourceSet = new Set(sourcePaths);
-    for (const cachedPath of this.fileCache.keys()) {
-      if (!sourceSet.has(cachedPath)) this.fileCache.delete(cachedPath);
-    }
-    const allRecords = [];
-    // Read one shard at a time, avoiding simultaneous JSON buffers for all 30 days.
-    for (const filePath of sourcePaths.sort()) {
-      if (epoch !== this.cacheEpoch) return [];
-      let fileStat;
-      try {
-        fileStat = await stat(filePath);
-      } catch {
-        this.fileCache.delete(filePath);
-        continue;
+  async getSources(range) {
+    let names = [];
+    try { names = await readdir(this.shardDirectory); } catch { /* no shards yet */ }
+    const retained = names.map((name) => ({ name, at: shardTimestampFor(name) }))
+      .filter((entry) => entry.at !== null && entry.at + DAY_MS > range.cutoff && entry.at <= range.now)
+      .sort((left, right) => left.at - right.at);
+    const legacy = await stat(this.filePath).catch(() => null);
+    const paths = retained.filter((entry) => entry.at <= range.to && entry.at + DAY_MS > range.from)
+      .map((entry) => path.join(this.shardDirectory, entry.name));
+    if (legacy?.size && legacy.mtimeMs >= range.from) paths.unshift(this.filePath);
+    return {
+      paths,
+      archive: {
+        shardCount: retained.length,
+        availableFrom: legacy?.size ? range.cutoff : retained.length ? Math.max(range.cutoff, retained[0].at) : null,
+        availableTo: retained.length ? Math.min(range.now, retained.at(-1).at + DAY_MS - 1) : legacy?.size ? Math.min(range.now, legacy.mtimeMs) : null
       }
-      const signature = String(fileStat.size) + ':' + String(fileStat.mtimeMs);
-      const cached = this.fileCache.get(filePath);
-      const records = cached?.signature === signature
-        ? cached.records
-        : parseRecords(await readFile(filePath, 'utf8').catch(() => ''));
-      if (epoch !== this.cacheEpoch) return [];
-      // Conservative accounting for parsed objects as well as serialized bytes.
-      this.cacheFile(filePath, { signature, records, bytes: Math.max(fileStat.size * 4, records.length * 1024) }, epoch);
-      for (const record of records) {
-        if (record.capturedAt >= cutoff) allRecords.push(record);
-      }
-      await yieldToEventLoop();
-    }
-    return allRecords.sort((left, right) => left.capturedAt - right.capturedAt);
+    };
   }
 
-  getView() {
-    if (this.viewPromise) return this.viewPromise;
-    const pending = this.buildView().finally(() => {
+  async *readSource(filePath, epoch, generation) {
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat) { this.fileCache.delete(filePath); return; }
+    const signature = `${fileStat.size}:${fileStat.mtimeMs}`;
+    const cached = this.fileCache.get(filePath);
+    if (cached?.signature === signature || fileStat.size <= 2 * 1024 * 1024) {
+      const records = cached?.signature === signature ? cached.records
+        : parseRecords(await readFile(filePath, 'utf8')).sort((left, right) => left.capturedAt - right.capturedAt);
+      if (epoch !== this.cacheEpoch || generation !== this.viewGeneration) return;
+      this.cacheFile(filePath, { signature, records, bytes: Math.max(fileStat.size * 4, records.length * 1024) }, epoch);
+      for (let index = 0; index < records.length; index++) {
+        if (epoch !== this.cacheEpoch || generation !== this.viewGeneration) return;
+        yield records[index];
+        if (index % 500 === 499) await yieldToEventLoop();
+      }
+      return;
+    }
+    // Large/legacy logs are streamed rather than retaining months of objects.
+    const input = createReadStream(filePath, { encoding: 'utf8' });
+    const reader = createInterface({ input, crlfDelay: Infinity });
+    let streamError = null;
+    input.on('error', (error) => { streamError = error; reader.close(); });
+    let count = 0;
+    try {
+      for await (const line of reader) {
+        if (epoch !== this.cacheEpoch || generation !== this.viewGeneration) return;
+        let record;
+        try { record = JSON.parse(line); } catch { continue; }
+        if (Number.isFinite(record?.capturedAt) && record.values && typeof record.values === 'object') yield record;
+        if (++count % 500 === 0) await yieldToEventLoop();
+      }
+    } finally {
+      reader.close();
+      input.destroy();
+    }
+    if (streamError) throw new Error('读取历史分片失败，请刷新重试');
+  }
+
+  getView(query = {}) {
+    const range = normalizeHistoryRange(query, this.retentionHours);
+    const metricIds = Array.isArray(query.metricIds) ? [...new Set(query.metricIds.filter((id) => HISTORY_METRIC_IDS.includes(id)))] : [...HISTORY_METRIC_IDS];
+    const key = JSON.stringify([range.from, range.to, metricIds]);
+    if (this.viewPromise && key === this.viewKey) return this.viewPromise;
+    const generation = ++this.viewGeneration;
+    const pending = this.buildView(range, metricIds, generation).finally(() => {
       if (this.viewPromise === pending) this.viewPromise = null;
     });
+    this.viewKey = key;
     this.viewPromise = pending;
     return pending;
   }
 
-  async buildView() {
+  async buildView(range, metricIds, generation) {
     const epoch = this.cacheEpoch;
-    const cancelledView = () => ({ settings: this.getSettings(), totalCount: 0, from: null, to: null, series: {} });
-    const records = await this.readAll();
-    const first = records[0]?.capturedAt ?? null;
-    const last = records.at(-1)?.capturedAt ?? null;
-    const series = {};
-    for (const id of HISTORY_METRIC_IDS) {
-      if (epoch !== this.cacheEpoch) return cancelledView();
-      series[id] = buildMetricSeries(records, id, MAX_RESPONSE_POINTS, HISTORY_INTERVAL_MS * 2);
+    const cancelled = () => epoch !== this.cacheEpoch || generation !== this.viewGeneration;
+    const cancelledView = () => ({ cancelled: true, settings: this.getSettings(), totalCount: 0, from: null, to: null, series: {} });
+    await this.writeQueue.catch(() => {});
+    if (cancelled()) return cancelledView();
+    const { paths, archive } = await this.getSources(range);
+    const accumulators = new Map(metricIds.map((id) => [id, createMetricSeriesAccumulator(range.from, range.to, MAX_RESPONSE_POINTS, HISTORY_INTERVAL_MS * 2)]));
+    let first = null;
+    let last = null;
+    let count = 0;
+    for (const filePath of paths) {
+      for await (const record of this.readSource(filePath, epoch, generation)) {
+        if (cancelled()) return cancelledView();
+        if (record.capturedAt < range.from || record.capturedAt > range.to) continue;
+        count++;
+        first = first === null ? record.capturedAt : Math.min(first, record.capturedAt);
+        last = last === null ? record.capturedAt : Math.max(last, record.capturedAt);
+        for (const [id, accumulator] of accumulators) accumulator.add(record.capturedAt, record.values[id]);
+      }
       await yieldToEventLoop();
     }
-    if (epoch !== this.cacheEpoch) return cancelledView();
+    if (cancelled()) return cancelledView();
     return {
-      settings: this.getSettings(),
-      totalCount: records.length,
-      from: first,
-      to: last,
-      series
+      settings: this.getSettings(), totalCount: count, from: first, to: last,
+      range: { from: range.from, to: range.to }, archive,
+      series: Object.fromEntries([...accumulators].map(([id, accumulator]) => [id, accumulator.finish()]))
     };
   }
 

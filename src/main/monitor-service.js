@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import si from 'systeminformation';
 import { GraphicsSampler } from './graphics-sampler.js';
+import { isMemoryTemperatureSensor, readMemoryTemperature } from './memory-temperature.js';
 import { LhmBridge } from './lhm-bridge.js';
 import { WindowsPerfSampler } from './windows-perf-sampler.js';
 
@@ -114,6 +115,7 @@ const summarizeLhmSensors = (sensors) => ({
   cpuTemp: sensorAvailability(sensors, isCpuTemperatureSensor),
   cpuPower: sensorAvailability(sensors, isCpuPowerSensor),
   cpuFan: sensorAvailability(sensors, isCpuFanSensor, { zeroIsValid: true }),
+  memoryTemp: sensorAvailability(sensors, isMemoryTemperatureSensor),
   boardTemp: sensorAvailability(sensors, isBoardSensor)
 });
 
@@ -133,14 +135,15 @@ const enhancedSensorDetail = (summary, status, mode, runtime) => {
     describe('CPU 温度：', summary.cpuTemp),
     describe('CPU 功耗：', summary.cpuPower),
     describe('CPU 风扇：', summary.cpuFan),
-    describe('主板温度：', summary.boardTemp)
+    describe('主板温度：', summary.boardTemp),
+    describe('内存温度：', summary.memoryTemp)
   ].join('，')}${requirement ? `。${requirement}` : ''}`;
 };
 
-const HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp'];
+const HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'memory.temp', 'gpu.load', 'gpu.temp'];
 const HISTORY_LIMIT = 120;
 const DEFAULT_HISTORY_METRICS = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp', 'board.temp', 'disk.load', 'network.down', 'network.up'];
-const ENHANCED_METRICS = ['cpu.temp', 'cpu.power', 'cpu.fan', 'gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.power', 'gpu.fan', 'board.temp'];
+const ENHANCED_METRICS = ['cpu.temp', 'cpu.power', 'cpu.fan', 'memory.temp', 'gpu.load', 'gpu.temp', 'gpu.vram', 'gpu.vram.used', 'gpu.power', 'gpu.fan', 'board.temp'];
 
 const memorySnapshot = () => {
   const total = os.totalmem();
@@ -377,13 +380,15 @@ export class MonitorService extends EventEmitter {
 
       const enhancedSensorList = lhmSensors ?? [];
       const enhanced = readLhmSensors(enhancedSensorList);
+      const memoryTemperature = readMemoryTemperature(enhancedSensorList);
       const enhancedMemoryTotal = gpuMemoryMB(enhanced.gpuMemoryTotal);
       const enhancedMemoryUsed = gpuMemoryMB(enhanced.gpuMemoryUsed);
       const enhancedVramLoad = sensorValue(enhanced.gpuMemoryLoad, { zeroIsValid: true })
         ?? (enhancedMemoryTotal && enhancedMemoryUsed !== null ? enhancedMemoryUsed / enhancedMemoryTotal * 100 : null);
       const needsGraphicsFallback = (shouldSample('gpu.load') && !enhanced.gpuLoad)
         || (shouldSample('gpu.temp') && !enhanced.gpuTemp)
-        || (shouldSample('gpu.vram') && enhancedVramLoad === null);
+        || (shouldSample('gpu.vram') && enhancedVramLoad === null)
+        || (shouldSample('gpu.vram.used') && enhancedMemoryUsed === null);
       const needsTemperatureFallback = shouldSample('cpu.temp') && !enhanced.cpuTemp;
       const needsWindowsTemperature = process.platform === 'win32' && needsTemperatureFallback;
       const needsWindowsPerf = needsDisk || needsNetwork || needsWindowsTemperature;
@@ -421,6 +426,15 @@ export class MonitorService extends EventEmitter {
           ? '管理员增强采集器未提供有效读数'
           : '未提供有效读数；可切换到管理员增强采集'
         : '需启用增强传感器';
+      const memoryTemperatureFallback = !this.lhmEnabled
+        ? '需启用增强传感器；仅支持带温度传感器且可访问的内存'
+        : enhancedBridgeStatus.status !== 'ready'
+          ? enhancedFallback
+          : memoryTemperature.detectedCount
+            ? '已识别内存温度传感器，暂未提供有效读数'
+            : this.lhmMode === 'standard'
+              ? '未读取到 DIMM 温度；可尝试管理员增强模式，需内存和主板支持'
+              : '未读取到 DIMM 温度；内存可能不带温度传感器，或主板/驱动未开放访问';
 
       const metrics = {
         'cpu.load': metric('cpu.load', 'CPU 利用率', cpuLoad, '%', cpu?.brand ?? '处理器', 'cpu', 'cpu'),
@@ -430,9 +444,14 @@ export class MonitorService extends EventEmitter {
         'cpu.fan': metric('cpu.fan', 'CPU 风扇', sensorValue(enhanced.cpuFan, { zeroIsValid: true }), 'RPM', sensorDetail(enhanced.cpuFan, enhancedFallback, { zeroIsValid: true }), 'cpu', 'activity'),
         'memory.load': metric('memory.load', '内存利用率', memoryLoad, '%', `${formatBytes(memory?.used)} / ${formatBytes(memory?.total)}`, 'memory', 'memory'),
         'memory.used': metric('memory.used', '内存已用', memory?.used ? memory.used / 1024 ** 3 : null, 'GB', `可用 ${formatBytes(memory?.available)}`, 'memory', 'memory'),
+        'memory.temp': {
+          ...metric('memory.temp', '内存温度', memoryTemperature.value, '°C', memoryTemperature.detail ?? memoryTemperatureFallback, 'memory', 'thermometer'),
+          modules: memoryTemperature.modules
+        },
         'gpu.load': metric('gpu.load', 'GPU 利用率', gpuLoad, '%', sensorDetail(enhanced.gpuLoad, controller?.model ?? '显卡传感器', { zeroIsValid: true }), 'gpu', 'gpu'),
         'gpu.temp': metric('gpu.temp', 'GPU 温度', gpuTemp, '°C', sensorDetail(enhanced.gpuTemp, gpuTemp === null ? '此驱动暂未提供温度' : controller?.model ?? '显卡温度'), 'gpu', 'thermometer'),
         'gpu.vram': metric('gpu.vram', '显存利用率', gpuVramLoad, '%', gpuMemoryTotal ? `${Math.round(gpuMemoryUsed ?? 0)} / ${Math.round(gpuMemoryTotal)} MB` : '显存数据不可用', 'gpu', 'gpu'),
+        'gpu.vram.used': metric('gpu.vram.used', '显存已用', gpuMemoryUsed === null ? null : gpuMemoryUsed / 1024, 'GB', gpuMemoryTotal ? `总计 ${(gpuMemoryTotal / 1024).toFixed(1)} GB` : '显存总容量不可用', 'gpu', 'gpu'),
         'gpu.power': metric('gpu.power', 'GPU 功耗', sensorValue(enhanced.gpuPower), 'W', sensorDetail(enhanced.gpuPower, enhancedFallback), 'gpu', 'activity'),
         'gpu.fan': metric('gpu.fan', 'GPU 风扇', sensorValue(enhanced.gpuFan, { zeroIsValid: true }), 'RPM', sensorDetail(enhanced.gpuFan, enhancedFallback, { zeroIsValid: true }), 'gpu', 'activity'),
         'board.temp': metric('board.temp', '主板温度', sensorValue(enhanced.boardTemp), '°C', sensorDetail(enhanced.boardTemp, enhancedFallback), 'board', 'thermometer'),

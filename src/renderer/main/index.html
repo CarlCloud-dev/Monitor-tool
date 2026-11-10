@@ -7,6 +7,7 @@
     <title>Monitor Tool</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="../shared/scrollbars.css" />
+    <link rel="stylesheet" href="../shared/update-ui.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -99,7 +100,7 @@
           <section class="history-summary-grid">
             <article class="history-summary-card"><span>记录状态</span><strong id="history-summary-status">—</strong><small id="history-summary-detail">—</small></article>
             <article class="history-summary-card"><span>最长保留周期</span><strong id="history-summary-retention">—</strong><small>超过周期的旧记录自动清除</small></article>
-            <article class="history-summary-card"><span>已保存点数</span><strong id="history-summary-count">—</strong><small id="history-summary-range">—</small></article>
+            <article class="history-summary-card"><span>当前区间采样点</span><strong id="history-summary-count">—</strong><small id="history-summary-range">—</small></article>
           </section>
 
           <section class="history-chart-section">
@@ -107,7 +108,43 @@
               <div><h2>历史曲线</h2><p id="history-chart-copy">正在读取本地记录</p></div>
               <button id="history-refresh" class="text-button" type="button">刷新</button>
             </div>
+            <section class="history-explorer" id="history-explorer" aria-label="历史曲线时间与指标筛选">
+              <div class="history-presets" aria-label="快捷时间范围">
+                <button type="button" data-history-hours="1">近 1 小时</button>
+                <button type="button" data-history-hours="6">近 6 小时</button>
+                <button type="button" data-history-hours="24" class="selected">近 24 小时</button>
+                <button type="button" data-history-hours="168">近 7 天</button>
+                <button type="button" data-history-hours="720">近 30 天</button>
+                <button type="button" data-history-hours="0">全部</button>
+              </div>
+              <div class="history-view-toolbar">
+                <label class="history-view-filter"><span>查看指标</span><span class="select-control"><select id="history-view-metric" aria-label="查看指标"></select></span></label>
+                <div class="history-period-actions">
+                  <button type="button" data-history-action="previous" aria-label="查看前一时间段">← 前一段</button>
+                  <button type="button" data-history-action="next" aria-label="查看后一时间段">后一段 →</button>
+                  <button type="button" data-history-action="latest">回到最近</button>
+                </div>
+              </div>
+              <div class="history-view-caption"><strong id="history-view-range">最近 24 小时</strong><span id="history-view-mode">实时跟随</span></div>
+              <details class="history-date-details">
+                <summary>按日期定位 / 自定义区间</summary>
+                <div class="history-date-row">
+                  <label><span>定位方式</span><span class="select-control"><select id="history-calendar-unit"><option value="day">某一天</option><option value="hour">某个小时</option><option value="week">某一周（周一至周日）</option></select></span></label>
+                  <label><span>日期</span><input id="history-calendar-date" type="date" required /></label>
+                  <label id="history-calendar-hour-label" hidden><span>小时</span><span class="select-control"><select id="history-calendar-hour"></select></span></label>
+                  <button type="button" data-history-action="calendar">查看</button>
+                </div>
+                <div class="history-date-row history-custom-row">
+                  <label><span>开始时间</span><input id="history-custom-from" type="datetime-local" required /></label>
+                  <label><span>结束时间</span><input id="history-custom-to" type="datetime-local" required /></label>
+                  <button type="button" data-history-action="custom">查看区间</button>
+                </div>
+              </details>
+              <div class="history-inspection-hint"><span>悬停查看读数 · 拖动曲线框选放大 · ← → 键查看采样</span><button type="button" data-history-action="back" disabled>返回缩放前</button></div>
+              <p class="history-view-error" id="history-view-error" role="alert" hidden></p>
+            </section>
             <div class="history-charts" id="history-charts"></div>
+            <div class="history-tooltip" id="history-tooltip" role="tooltip" hidden></div>
             <div class="history-empty" id="history-empty" hidden>
               <span>◌</span><b id="history-empty-title">还没有历史记录</b><p id="history-empty-copy">开启记录后，系统会按固定间隔保存采样数据。</p>
             </div>
@@ -142,6 +179,22 @@
             </article>
           </section>
 
+          <section class="app-update-card update-surface" id="about-update" aria-label="版本与更新">
+            <div class="app-update-heading">
+              <div><span class="update-eyebrow">VERSION &amp; UPDATES</span><h2>版本与更新</h2><p data-update-checked>启动时自动检查，也可随时手动检查</p></div>
+              <div class="update-version-pill"><strong data-update-current>正在读取版本…</strong><small data-update-mode></small></div>
+            </div>
+            <p class="update-status" data-update-message role="status">正在读取版本信息…</p>
+            <div class="update-actions">
+              <button class="update-button update-button-primary" type="button" data-update-action="check">检查更新</button>
+              <button class="update-button" type="button" data-update-action="show" hidden>查看更新</button>
+              <button class="update-button" type="button" data-update-action="manual">手动下载</button>
+            </div>
+            <label class="update-startup-toggle"><input id="update-check-on-startup" type="checkbox" checked /><span>应用启动时检查更新</span></label>
+            <p class="update-fine-print" data-update-guidance></p>
+            <p class="update-fine-print">发现新版后提示，由你选择是否下载安装。检查仅发送版本和平台信息，不上传硬件状态或历史记录。</p>
+          </section>
+
           <section class="about-notice">
             <div><span>本地优先</span><h2>你的硬件数据留在本机</h2></div>
             <p>实时采样、浮窗显示与历史记录均在本地运行；部分温度、功耗和风扇读数会因硬件、驱动或系统权限而不可用，应用会明确显示状态，不会伪造数据。</p>
@@ -149,79 +202,115 @@
         </main>
 
         <aside class="control-panel" id="monitor-settings-panel">
-          <section class="panel-heading">
-            <div>
-              <p class="eyebrow">DESKTOP OVERLAY</p>
-              <h2>桌面浮窗</h2>
+          <section class="display-settings-section">
+            <section class="panel-heading display-panel-heading">
+              <div>
+                <h2>桌面浮窗</h2>
+              </div>
+              <label class="switch" title="显示或隐藏桌面浮窗">
+                <input aria-controls="overlay-settings-options" id="overlay-visible" type="checkbox" />
+                <span></span>
+              </label>
+            </section>
+
+            <div id="overlay-settings-options" class="display-settings-options" hidden>
+              <div class="control-group">
+                <label class="control-label">浮窗模式</label>
+                <div class="segmented" id="mode-picker">
+                  <button data-overlay-mode="top" type="button">顶部模式</button>
+                  <button data-overlay-mode="side" type="button">侧边模式</button>
+                </div>
+                <div class="mode-options" id="top-mode-options">
+                  <label class="option-label">顶部样式</label>
+                  <div class="segmented compact-segmented">
+                    <button data-top-style="minimal" type="button">简洁</button>
+                    <button data-top-style="detailed" type="button">详细</button>
+                  </div>
+                  <p class="helper">简洁按 CPU / 内存 / GPU 分组；详细按监控项目整齐对齐。</p>
+                </div>
+                <div class="mode-options" id="side-mode-options" hidden>
+                  <label class="option-label">停靠位置</label>
+                  <div class="segmented compact-segmented">
+                    <button data-side-position="left" type="button">左侧</button>
+                    <button data-side-position="right" type="button">右侧</button>
+                  </div>
+                  <label class="option-label">信息排布</label>
+                  <div class="segmented compact-segmented">
+                    <button data-side-columns="1" type="button">单列</button>
+                    <button data-side-columns="2" type="button">双列</button>
+                  </div>
+                  <p class="helper">侧边模式采用纵向卡片信息布局，可切换单列或双列。</p>
+                </div>
+              </div>
+
+              <div class="range-control">
+                <div class="control-label-row"><label for="overlay-opacity">背景不透明度</label><output id="opacity-value">94%</output></div>
+                <input id="overlay-opacity" min="0" max="100" step="1" type="range" />
+                <p class="helper">仅调整背景，文字清晰度保持不变；0% 时背景完全透明。</p>
+              </div>
+
+              <div class="range-control">
+                <div class="control-label-row"><label for="overlay-scale">尺寸</label><output id="scale-value">100%</output></div>
+                <input id="overlay-scale" min="80" max="125" step="1" type="range" />
+              </div>
+
+              <div class="control-group">
+                <label class="control-label">浮窗背景样式</label>
+                <div class="segmented corner-picker">
+                  <button data-background-style="transparent" type="button">透明</button>
+                  <button data-background-style="panel" data-corner-radius="0" type="button">直角</button>
+                  <button data-background-style="panel" data-corner-radius="8" type="button">轻微圆角</button>
+                  <button data-background-style="panel" data-corner-radius="18" type="button">完全圆润</button>
+                </div>
+                <p class="helper">透明样式移除背景与边框，文字带半透明描边，随深浅主题切换。</p>
+              </div>
+
+              <div class="toggles">
+                <label class="toggle-row"><span><b>始终置顶</b><small>增强置顶并自动恢复，兼容无边框全屏；独占全屏游戏可能不支持</small></span><input id="always-on-top" type="checkbox" /></label>
+                <label class="toggle-row"><span><b>锁定与穿透</b><small>不接收鼠标操作</small></span><input id="overlay-locked" type="checkbox" /></label>
+              </div>
+
+              <div class="panel-actions">
+                <button id="reset-position" class="ghost-button" type="button">恢复默认位置</button>
+              </div>
             </div>
-            <label class="switch" title="显示或隐藏桌面浮窗">
-              <input id="overlay-visible" type="checkbox" />
-              <span></span>
-            </label>
           </section>
 
-          <div class="control-group">
-            <label class="control-label">浮窗模式</label>
-            <div class="segmented" id="mode-picker">
-              <button data-overlay-mode="top" type="button">顶部模式</button>
-              <button data-overlay-mode="side" type="button">侧边模式</button>
-            </div>
-            <div class="mode-options" id="top-mode-options">
-              <label class="option-label">顶部样式</label>
-              <div class="segmented compact-segmented">
-                <button data-top-style="minimal" type="button">简洁</button>
-                <button data-top-style="detailed" type="button">详细</button>
+          <div class="display-settings-section taskbar-monitor-settings">
+            <section class="panel-heading taskbar-panel-heading">
+              <h2>任务栏显示</h2>
+              <label class="switch" title="显示或隐藏任务栏监控">
+                <input aria-controls="taskbar-position-options" id="taskbar-visible" type="checkbox" />
+                <span></span>
+              </label>
+            </section>
+            <div id="taskbar-position-options" class="mode-options" hidden>
+              <label class="option-label">显示位置</label>
+              <div class="segmented">
+                <button data-taskbar-position="left" type="button">靠左</button>
+                <button data-taskbar-position="center" type="button">居中</button>
+                <button data-taskbar-position="right" type="button">靠右</button>
               </div>
-              <p class="helper">简洁按 CPU / 内存 / GPU 分组；详细按监控项目整齐对齐。</p>
             </div>
-            <div class="mode-options" id="side-mode-options" hidden>
-              <label class="option-label">停靠位置</label>
-              <div class="segmented compact-segmented">
-                <button data-side-position="left" type="button">左侧</button>
-                <button data-side-position="right" type="button">右侧</button>
+          </div>
+
+          <div id="shared-display-options" hidden>
+            <div class="control-group network-control">
+              <label class="control-label" for="network-unit">网络速率单位</label>
+              <div class="select-control">
+                <select id="network-unit">
+                  <option value="MB/s">MB/s</option>
+                  <option value="KB/s">KB/s</option>
+                </select>
               </div>
-              <label class="option-label">信息排布</label>
-              <div class="segmented compact-segmented">
-                <button data-side-columns="1" type="button">单列</button>
-                <button data-side-columns="2" type="button">双列</button>
-              </div>
-              <p class="helper">侧边模式采用纵向卡片信息布局，可切换单列或双列。</p>
+              <p class="helper">下载与上传速率统一使用此单位显示。</p>
             </div>
-          </div>
 
-          <div class="range-control">
-            <div class="control-label-row"><label for="overlay-opacity">透明度</label><output id="opacity-value">94%</output></div>
-            <input id="overlay-opacity" min="55" max="100" step="1" type="range" />
-          </div>
-
-          <div class="range-control">
-            <div class="control-label-row"><label for="overlay-scale">尺寸</label><output id="scale-value">100%</output></div>
-            <input id="overlay-scale" min="80" max="125" step="1" type="range" />
-          </div>
-
-          <div class="control-group network-control">
-            <label class="control-label" for="network-unit">网络速率单位</label>
-            <div class="select-control">
-              <select id="network-unit">
-                <option value="MB/s">MB/s</option>
-                <option value="KB/s">KB/s</option>
-              </select>
-            </div>
-            <p class="helper">下载与上传速率统一使用此单位显示。</p>
-          </div>
-
-          <div class="control-group">
-            <label class="control-label">浮窗圆角</label>
-            <div class="segmented corner-picker">
-              <button data-corner-radius="0" type="button">直角</button>
-              <button data-corner-radius="8" type="button">轻微圆角</button>
-              <button data-corner-radius="18" type="button">完全圆润</button>
-            </div>
-          </div>
-
-          <div class="toggles">
-            <label class="toggle-row"><span><b>始终置顶</b><small>置于普通窗口上方</small></span><input id="always-on-top" type="checkbox" /></label>
-            <label class="toggle-row"><span><b>锁定与穿透</b><small>不接收鼠标操作</small></span><input id="overlay-locked" type="checkbox" /></label>
+            <section class="display-items">
+              <div class="control-label-row"><label>共用显示项</label><span class="count" id="selected-count">0 项</span></div>
+              <p class="helper">桌面浮窗与任务栏共用；拖动已选项目调整显示顺序。</p>
+              <div class="metric-selector" id="metric-selector"></div>
+            </section>
           </div>
 
           <div class="toggles app-behavior">
@@ -256,17 +345,6 @@
             <p>达到阈值才通知；同一温度提醒默认每 5 分钟最多一次。</p>
           </div>
 
-          <div class="panel-divider"></div>
-
-          <section class="display-items">
-            <div class="control-label-row"><label>显示项</label><span class="count" id="selected-count">0 项</span></div>
-            <p class="helper">可自由勾选全部项目；拖动已选项目调整浮窗顺序。</p>
-            <div class="metric-selector" id="metric-selector"></div>
-          </section>
-
-          <div class="panel-actions">
-            <button id="reset-position" class="ghost-button" type="button">恢复默认位置</button>
-          </div>
         </aside>
 
         <aside class="control-panel history-control-panel" id="history-settings-panel" hidden>
@@ -285,12 +363,10 @@
             <label class="control-label" for="history-retention">最长保留周期</label>
             <div class="select-control">
               <select id="history-retention">
-                <option value="1">最多保留 1 小时</option>
-                <option value="6">最多保留 6 小时</option>
-                <option value="24">最多保留 24 小时</option>
-                <option value="72">最多保留 3 天</option>
                 <option value="168">最多保留 7 天</option>
                 <option value="720">最多保留 30 天</option>
+                <option value="2160">最多保留 90 天</option>
+                <option value="4320">最多保留 180 天</option>
               </select>
             </div>
             <p class="helper">每 10 秒保存一个本地采样点；超过设定周期的记录会自动清除，不上传网络。</p>
@@ -303,8 +379,8 @@
           </div>
 
           <div class="history-storage-card">
-            <div><span>当前记录</span><strong id="history-storage-count">—</strong></div>
-            <div><span>记录范围</span><strong id="history-storage-range">—</strong></div>
+            <div><span>当前区间</span><strong id="history-storage-count">—</strong></div>
+            <div><span>可查日期</span><strong id="history-storage-range">—</strong></div>
             <div><span>文件位置</span><strong>应用数据目录</strong></div>
           </div>
 

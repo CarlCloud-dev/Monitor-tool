@@ -1,12 +1,15 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell, Tray } from 'electron';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigStore } from './config-store.js';
 import { HistoryStore } from './history-store.js';
 import { MonitorService } from './monitor-service.js';
+import { UpdateService } from './update-service.js';
+import { createUpdateFetcher } from './update-network.js';
+import { TaskbarMonitor } from './taskbar-monitor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rendererPath = path.join(__dirname, '..', 'renderer');
@@ -14,6 +17,11 @@ const preloadPath = path.join(__dirname, 'preload.cjs');
 
 let mainWindow;
 let overlayWindow;
+let taskbarMonitor;
+let overlayTopmostTimer;
+let overlayTaskbarTimer;
+let updateWindow;
+let updateService;
 let tray;
 let appIcon = nativeImage.createEmpty();
 let isQuitting = false;
@@ -127,6 +135,17 @@ const updateTrayMenu = () => {
         void persistConfig({
           ...config,
           overlay: { ...config.overlay, visible: !config.overlay.visible }
+        });
+      }
+    },
+    {
+      label: '显示任务栏监控',
+      type: 'checkbox',
+      checked: config?.taskbar?.visible === true,
+      click: () => {
+        void persistConfig({
+          ...config,
+          taskbar: { ...config.taskbar, visible: !config.taskbar.visible }
         });
       }
     },
@@ -254,19 +273,85 @@ const sendTo = (window, channel, payload) => {
 const broadcastSettings = () => {
   sendTo(mainWindow, 'settings:changed', config);
   sendTo(overlayWindow, 'settings:changed', config);
+  taskbarMonitor?.send('settings:changed', config);
+  sendTo(updateWindow, 'settings:changed', config);
+};
+
+const showUpdateWindow = () => {
+  if (isQuitting || !updateService) return;
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    if (updateWindow.isMinimized()) updateWindow.restore();
+    updateWindow.show();
+    updateWindow.focus();
+    return;
+  }
+  const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() ? mainWindow : undefined;
+  updateWindow = new BrowserWindow({
+    width: 520, height: Math.min(560, screen.getPrimaryDisplay().workAreaSize.height - 48),
+    minWidth: 440, minHeight: 400, show: false, resizable: false, frame: false,
+    title: 'Monitor Tool · 应用更新', icon: appIcon,
+    backgroundColor: titleBarPalette().color,
+    ...(parent ? { parent, modal: true } : {}),
+    webPreferences: { preload: preloadPath, contextIsolation: true, sandbox: true, nodeIntegration: false }
+  });
+  updateWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  updateWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  updateWindow.once('ready-to-show', () => updateWindow?.show());
+  updateWindow.on('close', () => {
+    if (!isQuitting) { updateService?.cancelDownload(); updateService?.cancelCheck(); }
+  });
+  updateWindow.on('closed', () => { updateWindow = null; });
+  updateWindow.loadFile(path.join(rendererPath, 'update', 'index.html'));
+};
+
+const restoreOverlayTaskbar = () => {
+  if (process.platform !== 'win32' || isQuitting || !overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible()) return;
+  // Explorer can recreate buttons for unowned windows after it restarts.
+  // Electron's Windows implementation uses ITaskbarList::DeleteTab each time.
+  overlayWindow.setSkipTaskbar(true);
+};
+
+const syncOverlayTaskbar = () => {
+  clearInterval(overlayTaskbarTimer);
+  overlayTaskbarTimer = null;
+  if (process.platform !== 'win32' || isQuitting || !overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible()) return;
+  restoreOverlayTaskbar();
+  overlayTaskbarTimer = setInterval(restoreOverlayTaskbar, 15000);
+  overlayTaskbarTimer.unref();
+};
+
+const restoreOverlayTopmost = () => {
+  if (isQuitting || !config?.overlay.visible || !config.overlay.alwaysOnTop || !overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible() || overlayWindow.isMinimized()) return;
+  // A competing topmost window can cover us even while isAlwaysOnTop() is true.
+  // Reassert the native level and z-order without activating/focusing the window.
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  overlayWindow.moveTop();
+};
+
+const syncOverlayTopmost = () => {
+  clearInterval(overlayTopmostTimer);
+  overlayTopmostTimer = null;
+  if (isQuitting || !config?.overlay.visible || !config.overlay.alwaysOnTop || !overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible()) return;
+  restoreOverlayTopmost();
+  // Native calls only: no foreground-process polling or renderer refresh.
+  overlayTopmostTimer = setInterval(restoreOverlayTopmost, 3000);
+  overlayTopmostTimer.unref();
 };
 
 const applyOverlayConfiguration = () => {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
   const { overlay } = config;
-  overlayWindow.setAlwaysOnTop(overlay.alwaysOnTop, 'floating');
-  overlayWindow.setOpacity(overlay.opacity);
+  overlayWindow.setAlwaysOnTop(overlay.alwaysOnTop, 'screen-saver');
+  // Background alpha is rendered in CSS; native opacity would fade text too.
+  overlayWindow.setOpacity(1);
   overlayWindow.setIgnoreMouseEvents(overlay.locked, { forward: true });
   overlayWindow.setContentSize(overlayWidthFor(overlay), overlayWindow.getContentBounds().height);
   const contentBounds = overlayWindow.getContentBounds();
   resetOverlayShape(contentBounds.width, contentBounds.height);
   if (overlay.visible) overlayWindow.showInactive();
   else overlayWindow.hide();
+  syncOverlayTopmost();
+  syncOverlayTaskbar();
 };
 
 const createMainWindow = () => {
@@ -357,6 +442,22 @@ const createOverlayWindow = () => {
   });
 
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWindow.on('show', syncOverlayTopmost);
+  overlayWindow.on('hide', syncOverlayTopmost);
+  overlayWindow.on('show', syncOverlayTaskbar);
+  overlayWindow.on('hide', syncOverlayTaskbar);
+  overlayWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      restoreOverlayTaskbar();
+    }
+  });
+  overlayWindow.on('closed', () => {
+    clearInterval(overlayTopmostTimer);
+    overlayTopmostTimer = null;
+    clearInterval(overlayTaskbarTimer);
+    overlayTaskbarTimer = null;
+  });
   overlayWindow.loadFile(path.join(rendererPath, 'overlay', 'index.html'));
   overlayWindow.once('ready-to-show', () => {
     applyOverlayConfiguration();
@@ -394,23 +495,38 @@ const persistConfig = async (draft) => {
   hasManualOverlayPosition = Boolean(config.overlay.bounds);
   nativeTheme.themeSource = config.theme;
   applyMainWindowTheme();
+  if (updateWindow && !updateWindow.isDestroyed()) updateWindow.setBackgroundColor(titleBarPalette().color);
+  if (config.updates.checkOnStartup === false) updateService?.disablePendingStartupCheck();
   monitorService.setRefreshInterval(config.refreshMs);
   monitorService.setLhmEnabled(config.sensors.lhmEnabled);
   monitorService.setLhmMode(config.sensors.lhmMode);
   monitorService.setNetworkUnit(config.network.unit);
   monitorService.setSelectedMetrics(config.overlay.metrics);
-  monitorService.setOverlayVisible(config.overlay.visible);
+  monitorService.setOverlayVisible(config.overlay.visible || config.taskbar.visible);
   monitorService.setHistorySettings(config.history);
   monitorService.setAlertPolicy(config.alerts);
   historyStore.setSettings(config.history);
   syncMonitoringMode();
   applyOverlayConfiguration();
+  taskbarMonitor?.update(config);
   broadcastSettings();
   updateTrayMenu();
   return config;
 };
 
 const registerIpc = () => {
+  const trustedUpdateSender = (event) => [mainWindow, updateWindow].some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
+  const updateAction = (action) => async (event) => {
+    if (!trustedUpdateSender(event)) throw new Error('无效的更新请求');
+    return action();
+  };
+  ipcMain.handle('updates:get-state', updateAction(() => updateService.getState()));
+  ipcMain.handle('updates:check', updateAction(() => updateService.check()));
+  ipcMain.handle('updates:show', updateAction(() => { showUpdateWindow(); return updateService.getState(); }));
+  ipcMain.handle('updates:download', updateAction(() => updateService.downloadAndInstall()));
+  ipcMain.handle('updates:cancel', updateAction(() => { updateService.cancelDownload(); return updateService.getState(); }));
+  ipcMain.handle('updates:manual-download', updateAction(() => updateService.manualDownload()));
+  ipcMain.on('updates:close', (event) => { if (updateWindow?.webContents === event.sender) updateWindow.close(); });
   ipcMain.handle('monitor:get-snapshot', () => monitorService.getSnapshot());
   ipcMain.handle('settings:get', () => config);
   ipcMain.handle('settings:save', (_event, draft) => persistConfig(draft));
@@ -419,7 +535,7 @@ const registerIpc = () => {
       historyStore.setCacheActive(active === true && mainWindow.isVisible());
     }
   });
-  ipcMain.handle('history:get', () => historyStore.getView());
+  ipcMain.handle('history:get', (_event, query) => historyStore.getView(query));
   ipcMain.handle('history:save-settings', async (_event, draft) => {
     await updateConfig((current) => ({ ...current, history: draft }));
     historyStore.setSettings(config.history);
@@ -460,6 +576,7 @@ const registerIpc = () => {
       placeOverlay(position.x, position.y);
     }
   });
+  ipcMain.on('taskbar:resize', (event, size) => taskbarMonitor?.resize(event.sender, size));
 };
 
 app.whenReady().then(async () => {
@@ -478,8 +595,26 @@ app.whenReady().then(async () => {
   hasManualOverlayPosition = Boolean(config.overlay.bounds);
   nativeTheme.themeSource = config.theme;
   nativeTheme.on('updated', () => {
-    if (config?.theme === 'system') applyMainWindowTheme();
+    if (config?.theme === 'system') {
+      applyMainWindowTheme();
+      if (updateWindow && !updateWindow.isDestroyed()) updateWindow.setBackgroundColor(titleBarPalette().color);
+    }
   });
+  updateService = new UpdateService({
+    version: app.getVersion(), isPackaged: app.isPackaged,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR),
+    cacheDirectory: path.join(app.getPath('temp'), 'MonitorTool-updates'),
+    fetcher: createUpdateFetcher(),
+    openExternal: (url) => shell.openExternal(url), quit: () => app.quit()
+  });
+  updateService.on('change', (state) => {
+    sendTo(mainWindow, 'updates:state', state);
+    sendTo(updateWindow, 'updates:state', state);
+  });
+  updateService.on('diagnostic', (entry) => {
+    void appendFile(path.join(app.getPath('userData'), 'update-diagnostics.jsonl'), JSON.stringify(entry) + '\n', 'utf8').catch(() => {});
+  });
+  updateService.on('available', showUpdateWindow);
   monitorService = new MonitorService({
     refreshMs: config.refreshMs,
     lhmEnabled: config.sensors.lhmEnabled,
@@ -488,7 +623,7 @@ app.whenReady().then(async () => {
     alerts: config.alerts,
     lhmDirectory: lhmRuntimeDirectory(),
     selectedMetrics: config.overlay.metrics,
-    overlayVisible: config.overlay.visible,
+    overlayVisible: config.overlay.visible || config.taskbar.visible,
     historyEnabled: config.history.enabled,
     historyMetrics: config.history.metricIds
   });
@@ -497,6 +632,7 @@ app.whenReady().then(async () => {
   monitorService.on('snapshot', (snapshot) => {
     if (mainWindow?.isVisible() && !mainWindow.isMinimized()) sendTo(mainWindow, 'monitor:update', snapshot);
     if (overlayWindow?.isVisible()) sendTo(overlayWindow, 'monitor:update', { ...snapshot, history: [] });
+    taskbarMonitor?.send('monitor:update', { ...snapshot, history: [] });
     void historyStore.recordSnapshot(snapshot).then((recorded) => {
       if (recorded && mainWindow?.isVisible() && !mainWindow.isMinimized()) sendTo(mainWindow, 'history:changed', null);
     });
@@ -517,8 +653,24 @@ app.whenReady().then(async () => {
   // main panel is created on demand from the tray.
   if (!startedAtLogin()) createMainWindow();
   createOverlayWindow();
+  const taskbarProbeSource = await readFile(path.join(__dirname, '..', 'taskbar', 'TaskbarProbe.cs'));
+  const taskbarProbeName = `TaskbarProbe-${createHash('sha256').update(taskbarProbeSource).digest('hex').slice(0, 16)}.exe`;
+  taskbarMonitor = new TaskbarMonitor({
+    preload: preloadPath,
+    html: path.join(rendererPath, 'overlay', 'index.html'),
+    probe: app.isPackaged ? path.join(process.resourcesPath, 'taskbar', 'TaskbarProbe.exe') : path.join(__dirname, '..', '..', 'resources', 'taskbar', taskbarProbeName),
+    snapshot: () => monitorService.getSnapshot()
+  });
+  taskbarMonitor.update(config);
+  powerMonitor.on('resume', restoreOverlayTopmost);
+  powerMonitor.on('unlock-screen', restoreOverlayTopmost);
+  powerMonitor.on('resume', restoreOverlayTaskbar);
+  powerMonitor.on('unlock-screen', restoreOverlayTaskbar);
+  screen.on('display-metrics-changed', restoreOverlayTopmost);
+  screen.on('display-metrics-changed', restoreOverlayTaskbar);
   syncMonitoringMode();
   monitorService.start();
+  updateService.scheduleStartupCheck(config.updates.checkOnStartup);
 
   app.on('activate', () => {
     showMainWindow();
@@ -531,7 +683,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  clearInterval(overlayTopmostTimer);
+  clearInterval(overlayTaskbarTimer);
+  taskbarMonitor?.stop();
   historyStore?.setCacheActive(false);
   tray?.destroy();
   monitorService?.stop();
+  updateService?.stop();
 });

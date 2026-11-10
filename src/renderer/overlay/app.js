@@ -1,4 +1,5 @@
 const { monitorApi } = window;
+const isTaskbar = new URLSearchParams(location.search).get('taskbar') === '1';
 const state = { config: null, snapshot: null };
 let lastReportedSize = null;
 let renderedLayoutKey = '';
@@ -20,9 +21,11 @@ const metricPlaceholders = Object.fromEntries([
   ['cpu.fan', 'CPU 风扇', 'RPM', 'cpu', 'activity'],
   ['memory.load', '内存利用率', '%', 'memory', 'memory'],
   ['memory.used', '内存已用', 'GB', 'memory', 'memory'],
+  ['memory.temp', '内存温度', '°C', 'memory', 'thermometer'],
   ['gpu.load', 'GPU 利用率', '%', 'gpu', 'gpu'],
   ['gpu.temp', 'GPU 温度', '°C', 'gpu', 'thermometer'],
   ['gpu.vram', '显存利用率', '%', 'gpu', 'gpu'],
+  ['gpu.vram.used', '显存已用', 'GB', 'gpu', 'gpu'],
   ['gpu.power', 'GPU 功耗', 'W', 'gpu', 'activity'],
   ['gpu.fan', 'GPU 风扇', 'RPM', 'gpu', 'activity'],
   ['board.temp', '主板温度', '°C', 'board', 'thermometer'],
@@ -38,6 +41,7 @@ const toneThresholds = {
   'cpu.power': [120, 180],
   'cpu.fan': [1800, 2400],
   'memory.load': [80, 90],
+  'memory.temp': [70, 85],
   'gpu.load': [80, 90],
   'gpu.temp': [80, 90],
   'gpu.vram': [85, 95],
@@ -176,26 +180,34 @@ const scheduleResize = (root, overlay, shouldResize) => {
     const contentIsStale = Math.abs(window.innerWidth - size.width) > 1 || Math.abs(window.innerHeight - size.height) > 1;
     if (!lastReportedSize || contentIsStale || Math.abs(lastReportedSize.width - size.width) > 1 || Math.abs(lastReportedSize.height - size.height) > 1) {
       lastReportedSize = size;
-      monitorApi.resizeOverlay(size);
+      if (isTaskbar) monitorApi.resizeTaskbar(size);
+      else monitorApi.resizeOverlay(size);
     }
   });
 };
 
 function render() {
   if (!state.config || !state.snapshot) return;
-  const { overlay } = state.config;
+  const overlay = isTaskbar
+    ? { ...state.config.overlay, mode: 'top', topStyle: 'minimal', scale: 1, cornerRadius: 0, backgroundStyle: 'transparent', locked: true }
+    : state.config.overlay;
   const selectedMetrics = overlay.metrics.map((id) => state.snapshot.metrics?.[id] ?? metricPlaceholders[id]).filter(Boolean);
   const root = document.querySelector('#overlay-root');
   const modeClass = overlay.mode === 'side'
     ? 'mode-side side-' + overlay.sidePosition + ' side-columns-' + overlay.sideColumns
     : 'mode-top top-' + overlay.topStyle;
-  const appearanceKey = [modeClass, overlay.scale, overlay.cornerRadius, selectedMetrics.length, state.config.theme].join('|');
+  const appearanceKey = [modeClass, overlay.scale, overlay.cornerRadius, overlay.opacity, overlay.backgroundStyle, selectedMetrics.length, state.config.theme].join('|');
   const appearanceChanged = renderedAppearanceKey !== appearanceKey;
   if (appearanceChanged) {
     root.className = modeClass;
+    if (isTaskbar) root.classList.add('taskbar-mode');
     root.style.setProperty('--scale', overlay.scale);
-    root.style.setProperty('--corner-radius', String(overlay.cornerRadius * overlay.scale) + 'px');
-    root.style.setProperty('--corner-content-inset', String(Math.ceil(overlay.cornerRadius * overlay.scale * 0.6)) + 'px');
+    const transparent = overlay.backgroundStyle === 'transparent' || overlay.opacity === 0;
+    const radius = overlay.backgroundStyle === 'transparent' ? 0 : overlay.cornerRadius;
+    root.style.setProperty('--background-opacity', String(transparent ? 0 : overlay.opacity));
+    root.dataset.transparentBackground = String(transparent);
+    root.style.setProperty('--corner-radius', String(radius * overlay.scale) + 'px');
+    root.style.setProperty('--corner-content-inset', String(Math.ceil(radius * overlay.scale * 0.6)) + 'px');
     root.style.setProperty('--top-columns', String(Math.min(Math.max(selectedMetrics.length, 1), 12)));
     root.dataset.theme = state.config.theme;
     renderedAppearanceKey = appearanceKey;

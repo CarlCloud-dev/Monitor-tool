@@ -7,3 +7,7 @@ builder-effective-config.yaml
 *.log
 *.bak
 .DS_Store
+/update-channel.local.json
+/resources/taskbar/TaskbarProbe.exe
+/resources/taskbar/TaskbarProbe-*.exe
+/resources/taskbar/pack/

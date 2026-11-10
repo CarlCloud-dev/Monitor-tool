@@ -1,5 +1,7 @@
 import { finiteOrNull } from '../../shared/history-series.js';
-import { seriesSvg } from './history-chart.js';
+import { seriesSvg, historyChartSvg } from './history-chart.js';
+import { HistoryExplorer } from './history-explorer.js';
+import { UpdateView } from '../shared/update-ui.js';
 
 const { monitorApi } = window;
 
@@ -14,14 +16,15 @@ const state = {
   page: 'overview',
   history: { settings: null, series: {}, totalCount: 0, from: null, to: null, loading: false, error: null }
 };
-const primaryMetricIds = ['cpu.load', 'cpu.temp', 'memory.load', 'gpu.load', 'gpu.temp', 'gpu.vram'];
-const trendMetricIds = ['cpu.load', 'cpu.temp', 'gpu.load', 'gpu.temp'];
+const primaryMetricIds = ['cpu.load', 'cpu.temp', 'memory.load', 'memory.temp', 'gpu.load', 'gpu.temp', 'gpu.vram'];
+const trendMetricIds = ['cpu.load', 'cpu.temp', 'memory.temp', 'gpu.load', 'gpu.temp'];
 const historyMetricCatalog = [
   { id: 'cpu.load', label: 'CPU 利用率', unit: '%', group: 'cpu' },
   { id: 'cpu.temp', label: 'CPU 温度', unit: '°C', group: 'cpu' },
   { id: 'cpu.power', label: 'CPU 功耗', unit: 'W', group: 'cpu' },
   { id: 'cpu.fan', label: 'CPU 风扇', unit: 'RPM', group: 'cpu' },
   { id: 'memory.load', label: '内存利用率', unit: '%', group: 'memory' },
+  { id: 'memory.temp', label: '内存温度', unit: '°C', group: 'memory' },
   { id: 'gpu.load', label: 'GPU 利用率', unit: '%', group: 'gpu' },
   { id: 'gpu.temp', label: 'GPU 温度', unit: '°C', group: 'gpu' },
   { id: 'gpu.power', label: 'GPU 功耗', unit: 'W', group: 'gpu' },
@@ -32,6 +35,9 @@ const historyMetricCatalog = [
   { id: 'network.up', label: '上传速率', unit: 'B/s', group: 'network' }
 ];
 let historyRequestId = 0;
+const historyExplorer = new HistoryExplorer(historyMetricCatalog, () => { void loadHistory(); });
+const updateView = new UpdateView(document.querySelector('#about-update'));
+void updateView.init();
 let pendingHistorySettings = null;
 let confirmedHistorySettings = null;
 
@@ -43,6 +49,7 @@ const toneThresholds = {
   'cpu.power': [120, 180],
   'cpu.fan': [1800, 2400],
   'memory.load': [80, 90],
+  'memory.temp': [70, 85],
   'gpu.load': [80, 90],
   'gpu.temp': [80, 90],
   'gpu.vram': [85, 95],
@@ -158,7 +165,7 @@ function renderSnapshot() {
     return `<article class="metric-card metric-${item.group}${unavailable} ${tone}">
       <div class="metric-card-top"><span class="metric-icon">${iconFor(item.icon)}</span><span class="metric-label">${item.label}</span><span class="metric-state">${item.value === null ? '不可用' : '实时'}</span></div>
       <strong class="metric-value">${formatValue(item)}</strong>
-      <p>${escapeHtml(item.detail)}</p>
+      <p title="${escapeHtml(item.detail)}">${escapeHtml(item.detail)}</p>
     </article>`;
   }).join('');
 
@@ -187,12 +194,13 @@ function sparkline(samples, unit, group) {
 
 function renderHistoryPage() {
   const history = state.history;
-  const settings = history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 24, intervalSeconds: 10 };
+  const settings = history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 168, intervalSeconds: 10 };
   const series = history.series ?? {};
   const hasRecords = history.totalCount > 0;
   const hasChartData = hasRecords && Object.values(series).some((item) => item.stats.count > 0);
   const stateChip = document.querySelector('#history-state-chip');
   if (!stateChip) return;
+  historyExplorer.sync(history);
 
   document.querySelector('#history-enabled').checked = settings.enabled;
   document.querySelector('#history-retention').value = String(settings.retentionHours);
@@ -231,20 +239,20 @@ function renderHistoryPage() {
     ? history.error
     : history.loading
     ? '正在读取本地记录…'
-    : hasRecords ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)} · 每项最多 1200 点，保留峰值；统计基于全部记录` : '开启记录后会在这里显示本地历史曲线';
+    : hasRecords ? `区间内 ${history.totalCount.toLocaleString()} 条采样 · ${history.totalCount > 1200 ? '概览保留峰谷，放大查看细节' : '可查看约 10 秒间隔的采样'} · 统计基于区间全部记录` : '此时间区间暂无记录，可切换日期或查看全部';
   document.querySelector('#history-storage-count').textContent = history.loading ? '读取中' : `${history.totalCount ?? 0} 个采样点`;
-  document.querySelector('#history-storage-range').textContent = history.from
-    ? `${historyTimeLabel(history.from, true)} — ${historyTimeLabel(history.to, true)}`
+  document.querySelector('#history-storage-range').textContent = history.archive?.availableFrom
+    ? `${new Date(history.archive.availableFrom).toLocaleDateString('zh-CN')} — ${new Date(history.archive.availableTo).toLocaleDateString('zh-CN')}`
     : '暂无记录';
 
   const chartRoot = document.querySelector('#history-charts');
   const emptyRoot = document.querySelector('#history-empty');
   chartRoot.hidden = !hasChartData;
   emptyRoot.hidden = hasChartData;
-  document.querySelector('#history-empty-title').textContent = settings.enabled ? (hasRecords ? '当前记录没有可展示的指标' : '还没有历史记录') : '历史记录已关闭';
-  document.querySelector('#history-empty-copy').textContent = settings.enabled
-    ? (hasRecords ? '请在右侧“记录指标”中勾选需要记录的指标，之后会从新采样开始生成曲线。' : '开启记录后，系统会每 10 秒保存一个本地采样点。')
-    : '在右侧开启历史记录即可开始保存，不影响实时监控和桌面浮窗。';
+  document.querySelector('#history-empty-title').textContent = history.error ? '历史读取未完成' : hasRecords ? '该区间没有所选指标的有效读数' : '此时间段没有记录';
+  document.querySelector('#history-empty-copy').textContent = history.error || (hasRecords
+    ? '可切换查看指标；新增的记录指标只会从开启时开始保存，不会补造过去的数据。'
+    : '可查看前后时间段或选择“全部”。记录开关只影响新采样，已保存的数据仍可查询。');
   if (!hasChartData) {
     chartRoot.innerHTML = '';
     return;
@@ -253,36 +261,38 @@ function renderHistoryPage() {
   chartRoot.innerHTML = historyMetricCatalog.map((meta) => {
     const item = series[meta.id];
     if (!item?.stats.count) return '';
-    const { latest, minimum, maximum } = item.stats;
+    const { latest, minimum, maximum, mean } = item.stats;
+    const range = history.range ?? { from: history.from, to: history.to };
     return `<article class="history-chart-card history-${meta.group}">
-      <header><span>${meta.label}</span><strong>${historyValueLabel(latest, meta.unit)}</strong></header>
-      ${seriesSvg(item.points, meta.unit, meta.group, history.from, history.to)}
-      <footer><span>最低 ${historyValueLabel(minimum, meta.unit)}</span><span>最高 ${historyValueLabel(maximum, meta.unit)}</span></footer>
+      <header><span>${meta.label}</span><strong title="所选区间最后一次采样；缺测时显示为空"><small>末次</small>${historyValueLabel(latest, meta.unit)}</strong></header>
+      ${historyChartSvg(item.points, meta.unit, meta.id, meta.label, range.from, range.to)}
+      <footer><span>最低 ${historyValueLabel(minimum, meta.unit)}</span><span>平均 ${historyValueLabel(mean, meta.unit)}</span><span>最高 ${historyValueLabel(maximum, meta.unit)}</span></footer>
     </article>`;
   }).join('');
 }
 
 async function loadHistory() {
-  if (state.page !== 'history' || document.hidden || state.historySaving) return;
+  if (state.page !== 'history' || document.hidden || state.historySaving || historyExplorer.drag) return;
   monitorApi.setHistoryActive(true);
   const requestId = ++historyRequestId;
   state.history.loading = true;
   state.history.error = null;
   renderHistoryPage();
   try {
-    const view = await monitorApi.getHistory();
+    const view = await monitorApi.getHistory(historyExplorer.query());
     if (requestId !== historyRequestId) return;
+    if (view.cancelled) throw new Error('历史查询已中断，请点击刷新重试');
     const { settings: _settings, ...data } = view;
     state.history = { ...state.history, ...data, loading: false, error: null };
   } catch (error) {
     if (requestId !== historyRequestId) return;
-    state.history = { ...state.history, loading: false, error: error.message || '历史记录读取失败' };
+    state.history = { ...state.history, series: {}, totalCount: 0, from: null, to: null, range: null, loading: false, error: error.message || '历史记录读取失败' };
   }
   renderHistoryPage();
 }
 
 async function saveHistorySettings() {
-  const previousSettings = state.history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 24, intervalSeconds: 10 };
+  const previousSettings = state.history.settings ?? state.config?.history ?? { enabled: true, retentionHours: 168, intervalSeconds: 10 };
   const next = {
     enabled: document.querySelector('#history-enabled').checked,
     retentionHours: Number(document.querySelector('#history-retention').value),
@@ -325,6 +335,8 @@ function releaseHistoryView() {
   historyRequestId += 1;
   state.history.loading = false;
   state.history.series = {};
+  historyExplorer.clearDrag();
+  historyExplorer.hideInspection();
   document.querySelector('#history-charts').innerHTML = '';
   monitorApi.setHistoryActive(false);
 }
@@ -355,7 +367,11 @@ function renderSettings() {
   const { overlay } = state.config;
   document.documentElement.dataset.theme = state.config.theme;
   document.querySelector('#overlay-visible').checked = overlay.visible;
+  document.querySelector('#overlay-visible').setAttribute('aria-expanded', String(overlay.visible));
+  document.querySelector('#overlay-settings-options').hidden = !overlay.visible;
+  document.querySelector('#shared-display-options').hidden = !overlay.visible && state.config.taskbar?.visible !== true;
   document.querySelector('#launch-at-login').checked = state.config.behavior?.launchAtLogin === true;
+  document.querySelector('#update-check-on-startup').checked = state.config.updates?.checkOnStartup !== false;
   const minimizeToTray = state.config.behavior?.minimizeToTray !== false;
   document.querySelector('#minimize-to-tray').checked = minimizeToTray;
   const lightweightMode = document.querySelector('#lightweight-mode');
@@ -366,10 +382,19 @@ function renderSettings() {
   document.querySelector('#cpu-temperature-threshold').value = state.config.alerts.cpuTemperature;
   document.querySelector('#gpu-temperature-threshold').value = state.config.alerts.gpuTemperature;
   document.querySelector('#always-on-top').checked = overlay.alwaysOnTop;
+  document.querySelector('#taskbar-visible').checked = state.config.taskbar?.visible === true;
+  document.querySelector('#taskbar-visible').setAttribute('aria-expanded', String(state.config.taskbar?.visible === true));
+  document.querySelector('#taskbar-position-options').hidden = state.config.taskbar?.visible !== true;
+  document.querySelectorAll('[data-taskbar-position]').forEach((button) => {
+    const selected = button.dataset.taskbarPosition === state.config.taskbar?.position;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
   document.querySelector('#overlay-locked').checked = overlay.locked;
   document.querySelector('#overlay-opacity').value = Math.round(overlay.opacity * 100);
+  document.querySelector('#overlay-opacity').disabled = overlay.backgroundStyle === 'transparent';
   document.querySelector('#overlay-scale').value = Math.round(overlay.scale * 100);
-  document.querySelector('#opacity-value').textContent = `${Math.round(overlay.opacity * 100)}%`;
+  document.querySelector('#opacity-value').textContent = overlay.backgroundStyle === 'transparent' ? '透明' : `${Math.round(overlay.opacity * 100)}%`;
   document.querySelector('#scale-value').textContent = `${Math.round(overlay.scale * 100)}%`;
   document.querySelector('#network-unit').value = state.config.network?.unit === 'KB/s' ? 'KB/s' : 'MB/s';
   document.querySelector('#refresh-label').textContent = `${(state.config.refreshMs / 1000).toFixed(1)} s`;
@@ -410,8 +435,12 @@ function renderSettings() {
   document.querySelectorAll('[data-side-columns]').forEach((button) => {
     button.classList.toggle('selected', Number(button.dataset.sideColumns) === overlay.sideColumns);
   });
-  document.querySelectorAll('[data-corner-radius]').forEach((button) => {
-    button.classList.toggle('selected', Number(button.dataset.cornerRadius) === overlay.cornerRadius);
+  document.querySelectorAll('[data-background-style]').forEach((button) => {
+    const selected = button.dataset.backgroundStyle === 'transparent'
+      ? overlay.backgroundStyle === 'transparent'
+      : overlay.backgroundStyle !== 'transparent' && Number(button.dataset.cornerRadius) === overlay.cornerRadius;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
   });
   document.querySelectorAll('[data-lhm-mode]').forEach((button) => {
     button.classList.toggle('selected', button.dataset.lhmMode === state.config.sensors.lhmMode);
@@ -544,7 +573,9 @@ document.addEventListener('change', async (event) => {
   if (!state.config || state.saving) return;
   const next = cloneConfig();
   if (event.target.id === 'overlay-visible') next.overlay.visible = event.target.checked;
+  else if (event.target.id === 'taskbar-visible') next.taskbar.visible = event.target.checked;
   else if (event.target.id === 'launch-at-login') next.behavior.launchAtLogin = event.target.checked;
+  else if (event.target.id === 'update-check-on-startup') next.updates = { ...next.updates, checkOnStartup: event.target.checked };
   else if (event.target.id === 'minimize-to-tray') next.behavior.minimizeToTray = event.target.checked;
   else if (event.target.id === 'lightweight-mode') next.behavior.lightweightMode = event.target.checked;
   else if (event.target.id === 'lhm-enabled') next.sensors.lhmEnabled = event.target.checked;
@@ -580,6 +611,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (event.target.id === 'history-refresh') {
+    historyExplorer.refresh();
     await loadHistory();
     return;
   }
@@ -629,10 +661,19 @@ document.addEventListener('click', async (event) => {
     }
     return;
   }
-  const cornerRadius = Number(event.target.dataset.cornerRadius);
-  if ([0, 8, 18].includes(cornerRadius)) {
+  const taskbarPosition = event.target.dataset.taskbarPosition;
+  if (['left', 'center', 'right'].includes(taskbarPosition)) {
     const next = cloneConfig();
-    next.overlay.cornerRadius = cornerRadius;
+    next.taskbar.position = taskbarPosition;
+    await saveConfig(next);
+    return;
+  }
+  const backgroundStyle = event.target.dataset.backgroundStyle;
+  const cornerRadius = Number(event.target.dataset.cornerRadius);
+  if (backgroundStyle === 'transparent' || backgroundStyle === 'panel' && [0, 8, 18].includes(cornerRadius)) {
+    const next = cloneConfig();
+    next.overlay.backgroundStyle = backgroundStyle;
+    if (backgroundStyle === 'panel') next.overlay.cornerRadius = cornerRadius;
     await saveConfig(next);
     return;
   }
@@ -718,7 +759,7 @@ async function boot() {
     renderSettings();
   });
   monitorApi.onHistoryChanged(() => {
-    if (state.page === 'history' && !state.history.loading) void loadHistory();
+    if (state.page === 'history' && !state.history.loading && historyExplorer.isLive()) void loadHistory();
   });
   monitorApi.onHistorySettingsChanged((settingsUpdate) => {
     // Our queued draft is newer than the acknowledgement for an earlier save.
