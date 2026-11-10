@@ -576,7 +576,6 @@ const registerIpc = () => {
       placeOverlay(position.x, position.y);
     }
   });
-  ipcMain.on('taskbar:resize', (event, size) => taskbarMonitor?.resize(event.sender, size));
 };
 
 app.whenReady().then(async () => {
@@ -654,10 +653,10 @@ app.whenReady().then(async () => {
   if (!startedAtLogin()) createMainWindow();
   createOverlayWindow();
   const taskbarProbeSource = await readFile(path.join(__dirname, '..', 'taskbar', 'TaskbarProbe.cs'));
-  const taskbarProbeName = `TaskbarProbe-${createHash('sha256').update(taskbarProbeSource).digest('hex').slice(0, 16)}.exe`;
+  const taskbarHostSource = await readFile(path.join(__dirname, '..', 'taskbar', 'TaskbarHost.cs'));
+  const taskbarManifest = await readFile(path.join(__dirname, '..', 'taskbar', 'TaskbarProbe.manifest'));
+  const taskbarProbeName = `TaskbarProbe-${createHash('sha256').update(taskbarProbeSource).update(taskbarHostSource).update(taskbarManifest).digest('hex').slice(0, 16)}.exe`;
   taskbarMonitor = new TaskbarMonitor({
-    preload: preloadPath,
-    html: path.join(rendererPath, 'overlay', 'index.html'),
     probe: app.isPackaged ? path.join(process.resourcesPath, 'taskbar', 'TaskbarProbe.exe') : path.join(__dirname, '..', '..', 'resources', 'taskbar', taskbarProbeName),
     snapshot: () => monitorService.getSnapshot()
   });

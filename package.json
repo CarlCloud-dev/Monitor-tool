@@ -1,6 +1,6 @@
 {
   "name": "monitor-tool",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "description": "A lightweight, configurable Windows desktop hardware monitor.",
   "author": "Monitor Tool",
